@@ -140,12 +140,12 @@ _under
 ^caret
 -dash
 .dot
-Äpfel
-Apfel
+Äbc
+Abc
 Über
 Uz
-Ubung
-Ölfass
+Ubc
+Öbc
 Oz
 Émile
 Ezra

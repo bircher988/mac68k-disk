@@ -195,9 +195,9 @@ check "$H"
 contains "$("$D" ls -l "$H")" "folder        1 item" "folder valence"
 
 echo "== HFS names"
-run "$D" add "$H" "$IN/raw.txt" --name "Über Straße"
-contains "$("$D" ls "$H")" "Über Straße" "Mac Roman name"
-run "$D" get "$H" "über straße" --data -o "$TMP/out/uber.txt" && same_bytes "$IN/raw.txt" "$TMP/out/uber.txt"
+run "$D" add "$H" "$IN/raw.txt" --name "Über Café ß"
+contains "$("$D" ls "$H")" "Über Café ß" "Mac Roman name"
+run "$D" get "$H" "über café ß" --data -o "$TMP/out/uber.txt" && same_bytes "$IN/raw.txt" "$TMP/out/uber.txt"
 check "$H"
 
 echo "== HFS stress (150 files, folders, multi-level catalog)"
