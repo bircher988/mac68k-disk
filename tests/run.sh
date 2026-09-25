@@ -6,7 +6,7 @@
 # them back and compare name, type, creator, Finder flags and both forks
 # bit for bit; replace, remove and re-add (free space must come back); error
 # paths (disk full, duplicate names, bad names, DiskCopy images) must leave
-# the image unchanged. HFS also gets folders and a stress test with 150
+# the image unchanged; startup sets the boot blocks' startup application. HFS also gets folders and a stress test with 150
 # files that forces a multi-level catalog B-tree. After every change the
 # image is verified by tests/mactest.py, a structure checker written
 # independently of the C code.
@@ -270,6 +270,18 @@ run "$D" add "$B" "$IN/app.bin"
 head -c 1024 "$B" > "$TMP/boot.after"
 same_bytes "$TMP/boot.before" "$TMP/boot.after"
 contains "$("$D" info "$B")" "startup   yes" "boot blocks"
+# startup: show and set the application the disk opens at boot (bbHelloName, $5A)
+run "$D" startup "$B"
+fails "$B" "no file \"Nothing\"" "$D" startup "$B" Nothing
+fails "$B" "15 characters" "$D" startup "$B" "A Name Far Too Long"
+run "$D" startup "$B" "Hello App"
+contains "$("$D" startup "$B")" "opens \"Hello App\" at startup" "startup name"
+contains "$("$D" info "$B")" "opens     Hello App" "info shows the startup application"
+[ "$(od -A n -t x1 -j 90 -N 16 "$B" | tr -d ' \n')" = "0948656c6c6f20417070000000000000" ] && good || bad "bbHelloName bytes"
+run "$D" startup "$B" Elsewhere -f
+contains "$("$D" startup "$B")" "opens \"Elsewhere\"" "startup -f"
+check "$B"
+fails "$M" "no boot blocks" "$D" startup "$M" Finder
 python3 -c "
 import struct, sys
 data = open(sys.argv[1], 'rb').read()

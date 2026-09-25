@@ -1,4 +1,4 @@
-/* main.c - mac68k-disk command line: new, add, ls, get, rm, mkdir, info, version, help. */
+/* main.c - mac68k-disk command line: new, add, ls, get, rm, mkdir, info, startup, version, help. */
 #define _POSIX_C_SOURCE 200809L
 #include "macbin.h"
 #include "names.h"
@@ -27,6 +27,7 @@ static void usage(FILE *f) {
           "       mac68k-disk rm    <image> <mac name>\n"
           "       mac68k-disk mkdir <image> <folder>\n"
           "       mac68k-disk info  <image>\n"
+          "       mac68k-disk startup <image> [<application>] [-f]\n"
           "       mac68k-disk version\n"
           "       mac68k-disk help\n"
           "\n"
@@ -43,6 +44,8 @@ static void usage(FILE *f) {
           "  rm     delete a file or an empty folder\n"
           "  mkdir  create a folder (HFS only)\n"
           "  info   format, volume name, sizes, free space, dates\n"
+          "  startup  show or set the application a startup disk opens when it boots\n"
+          "         (Finder = the normal desktop); -f sets a name not found on the disk\n"
           "\n"
           "Images are raw sector images (.dsk, .img) as used by Mini vMac, Basilisk II\n"
           "and floppy emulators. On HFS, ':' separates folders: \"Games:Hello\".\n", f);
@@ -458,6 +461,60 @@ static int cmd_mkdir(int argc, char **argv) {
     return 0;
 }
 
+/* ---- startup ---- */
+
+/* Boot blocks: after the header come Str15 names, 16 bytes each. bbHelloName is
+ * the application the system opens after booting - normally the Finder. */
+#define BB_HELLO 0x5A
+
+static void hello_name(const unsigned char *bb, char *out) {
+    name_to_utf8(bb + BB_HELLO + 1, bb[BB_HELLO] > 15 ? 15 : bb[BB_HELLO], out);
+}
+
+/* Is there a file of that name where the system looks for it: the only folder
+ * of an MFS disk, on HFS the blessed System Folder (or the root)? */
+static int startup_file_exists(Volume *v, const MacName *n) {
+    Entry e;
+    if (vol_find(v, ROOT_ID, n, &e) && !e.is_dir) return 1;
+    if (v->kind != FS_HFS) return 0;
+    VolInfo vi;
+    vol_info(v, &vi);
+    Entry sf;
+    if (!vi.blessed.len || !vol_find(v, ROOT_ID, &vi.blessed, &sf) || !sf.is_dir) return 0;
+    return vol_find(v, sf.id, n, &e) && !e.is_dir;
+}
+
+static int cmd_startup(int argc, char **argv) {
+    Args pos = {0};
+    int force = 0;
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "-f")) force = 1;
+        else if (argv[i][0] == '-' && argv[i][1]) unknown_option(argv[i]);
+        else args_add(&pos, argv[i]);
+    }
+    if (pos.n < 1 || pos.n > 2) return bad_usage();
+    Volume *v = vol_open(pos.v[0]);
+    if (get16(v->img) != 0x4C4B)
+        fail(v->path, "no boot blocks - not a startup disk (start from a copy of a System disk)");
+    char s[64];
+    if (pos.n == 1) {
+        hello_name(v->img, s);
+        printf("%s: opens \"%s\" at startup\n", v->path, s);
+        return 0;
+    }
+    MacName n = mac_name(v->path, pos.v[1], strlen(pos.v[1]), 15, " (the boot blocks have room for 15 characters)");
+    if (!force && !startup_file_exists(v, &n))
+        fail(v->path, "no file \"%s\" %s (-f sets the name anyway)", name_str(&n),
+             v->kind == FS_HFS ? "in the System Folder" : "on the disk");
+    memset(v->img + BB_HELLO, 0, 16);
+    v->img[BB_HELLO] = n.len;
+    memcpy(v->img + BB_HELLO + 1, n.s, n.len);
+    vol_save(v);
+    hello_name(v->img, s);
+    printf("%s: opens \"%s\" at startup\n", v->path, s);
+    return 0;
+}
+
 /* ---- info ---- */
 
 static int cmd_info(int argc, char **argv) {
@@ -487,6 +544,11 @@ static int cmd_info(int argc, char **argv) {
     }
     if (vi.blessed.len) printf("  startup   %s (System Folder \"%s\")\n", vi.boot_blocks ? "yes" : "no boot blocks", name_str(&vi.blessed));
     else printf("  startup   %s\n", vi.boot_blocks ? "yes (boot blocks present)" : "no");
+    if (vi.boot_blocks) {
+        char s[64];
+        hello_name(v->img, s);
+        printf("  opens     %s\n", s);
+    }
     return 0;
 }
 
@@ -505,6 +567,7 @@ int main(int argc, char **argv) {
     if (!strcmp(cmd, "rm")) return cmd_rm(argc, argv);
     if (!strcmp(cmd, "mkdir")) return cmd_mkdir(argc, argv);
     if (!strcmp(cmd, "info")) return cmd_info(argc, argv);
+    if (!strcmp(cmd, "startup")) return cmd_startup(argc, argv);
     fprintf(stderr, "%s: unknown command '%s'\n", prog_name, cmd);
     return bad_usage();
 }

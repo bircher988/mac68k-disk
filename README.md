@@ -63,6 +63,7 @@ mac68k-disk get   <image> <mac name> [-o <out>] [--data|--rsrc]
 mac68k-disk rm    <image> <mac name>
 mac68k-disk mkdir <image> <folder>
 mac68k-disk info  <image>
+mac68k-disk startup <image> [<application>] [-f]
 mac68k-disk version | help
 ```
 
@@ -112,6 +113,19 @@ is; `-o -` writes to standard output.
 has no folders). **info** shows format, volume name, allocation blocks, free space,
 number of files and folders, dates and whether the disk has boot blocks and a System
 Folder.
+
+**startup** shows which application a startup disk opens when the Mac boots from it,
+and with a name sets it. Normally that is the Finder; with your program, the Mac boots
+straight into it - handy for tests in an emulator and for single-purpose disks:
+
+```
+cp System.dsk Test.dsk                   # a copy of a startup disk
+mac68k-disk add Test.dsk out/Game.bin
+mac68k-disk startup Test.dsk Game        # boots into Game; "Finder" restores it
+```
+
+The name goes into the boot blocks (`bbHelloName`, at most 15 characters). The file
+must be on the disk (on HFS in the System Folder); `-f` sets a name anyway.
 
 Names on the disk are Mac Roman. Names on the command line are UTF-8 and are converted
 ("Über", "Café"); other bytes are taken as they are. Names are compared the way the
@@ -197,7 +211,7 @@ a 400K disk made by `mac68k-disk`.
   reordered, but a new name that differs from an existing one in the same folder only
   there may be placed where the Mac does not expect it.
 - New disks are not startup disks (no boot blocks). To make one, start from a copy of
-  an existing startup disk and add to it.
+  an existing startup disk and add to it (`startup` chooses what it opens).
 - MFS: `new` makes 400K volumes only; other MFS images can be read and changed. The
   Finder's MFS folders are not shown.
 - Get Info comments in MacBinary files are ignored; file locking is not shown.
