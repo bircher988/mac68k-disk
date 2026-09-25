@@ -10,6 +10,7 @@
 # files that forces a multi-level catalog B-tree. After every change the
 # image is verified by tests/mactest.py, a structure checker written
 # independently of the C code.
+# MAC68K_TEST_DISKS=<dir> adds tests on copies of the images in <dir>.
 # At the end, tests/oracle.sh runs the interoperability tests with hfsutils
 # if it is installed.
 set -u
@@ -280,6 +281,30 @@ fails "$TMP/dc42.image" "DiskCopy 4.2 images are not supported yet" "$D" add "$T
 head -c 409600 /dev/zero > "$TMP/zero.dsk"
 fails "$TMP/zero.dsk" "no MFS or HFS volume" "$D" ls "$TMP/zero.dsk"
 fails_new "$TMP/missing.dsk" "no such file" "$D" ls "$TMP/missing.dsk"
+
+# Optional: MAC68K_TEST_DISKS=<dir> runs over copies of every image in that
+# directory (for example Apple's system disks): info, ls -R, get of every
+# file, then add, get and rm of a file; the structure is checked after each change.
+if [ -n "${MAC68K_TEST_DISKS:-}" ]; then
+    echo "== images in $MAC68K_TEST_DISKS"
+    for src in "$MAC68K_TEST_DISKS"/*; do
+        [ -f "$src" ] || continue
+        img=$TMP/foreign.img
+        cp "$src" "$img"
+        if ! "$D" info "$img" > "$TMP/info.txt" 2>&1; then echo "   skipped $(basename "$src"): $(cat "$TMP/info.txt")"; continue; fi
+        n=0
+        "$D" ls -R "$img" | grep -v ':$' > "$TMP/files.txt"
+        while IFS= read -r f; do
+            "$D" get "$img" ":$f" -o "$TMP/out/x.bin" > /dev/null && n=$((n + 1)) || bad "$(basename "$src"): get $f"
+        done < "$TMP/files.txt"
+        echo "   $(basename "$src"): $(head -1 "$TMP/info.txt" | sed 's/^[^:]*: //'), $n files read"
+        run "$D" add "$img" "$IN/app.bin" --name "Test App"
+        run "$D" get "$img" "Test App" -o "$TMP/out/t.bin" && same_but_name "$IN/app.bin" "$TMP/out/t.bin"
+        check "$img"
+        run "$D" rm "$img" "Test App"
+        check "$img"
+    done
+fi
 
 echo "== install"
 run make -s -C "$ROOT" install PREFIX="$TMP/prefix"
