@@ -44,8 +44,8 @@ static void usage(FILE *f) {
           "  mkdir  create a folder (HFS only)\n"
           "  info   format, volume name, sizes, free space, dates\n"
           "\n"
-          "Images are raw sector images (.dsk, .img) as Mini vMac, Basilisk II and\n"
-          "real floppies use. On HFS, ':' separates folders: \"Games:Hello\".\n", f);
+          "Images are raw sector images (.dsk, .img) as used by Mini vMac, Basilisk II\n"
+          "and floppy emulators. On HFS, ':' separates folders: \"Games:Hello\".\n", f);
 }
 
 static int bad_usage(void) { usage(stderr); return 2; }
