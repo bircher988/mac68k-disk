@@ -293,7 +293,7 @@ static int cmd_add(int argc, char **argv) {
 /* ---- ls ---- */
 
 static void print_entry(const Entry *e, const char *prefix, int longfmt) {
-    char name[800], date[20];
+    char name[800], date[32];
     name_to_utf8(e->name.s, e->name.len, name);
     if (!longfmt) { printf("%s%s%s\n", prefix, name, e->is_dir ? ":" : ""); return; }
     mac_date_str(e->mddate, date);
@@ -470,7 +470,7 @@ static int cmd_info(int argc, char **argv) {
     Volume *v = vol_open(pos.v[0]);
     VolInfo vi;
     vol_info(v, &vi);
-    char date[20];
+    char date[32];
     uint64_t total = (uint64_t)vi.nblocks * vi.blksize, freeb = (uint64_t)vi.freeblocks * vi.blksize;
     printf("%s: %s volume \"%s\", %zuK image\n", v->path, vi.kind == FS_MFS ? "MFS" : "HFS", name_str(&vi.name), v->size / 1024);
     printf("  blocks    %u allocation blocks of %u bytes, %u free\n", vi.nblocks, vi.blksize, vi.freeblocks);

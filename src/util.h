@@ -38,6 +38,6 @@ const char *path_basename(const char *path);
 
 /* ---- dates: Mac dates count seconds since 1904-01-01 00:00 local time ---- */
 uint32_t mac_now(void);
-void mac_date_str(uint32_t t, char out[20]);    /* "YYYY-MM-DD HH:MM", "-" for 0 */
+void mac_date_str(uint32_t t, char out[32]);    /* "YYYY-MM-DD HH:MM", "-" for 0 */
 
 #endif

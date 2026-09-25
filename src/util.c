@@ -1,5 +1,5 @@
 /* util.c - small helpers: memory, diagnostics, big-endian bytes, files, Mac dates. */
-#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 #include "util.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -40,8 +40,9 @@ char *xstrdup(const char *s) {
 
 char *xsprintf(const char *fmt, ...) {
     va_list ap;
+    char probe[1];
     va_start(ap, fmt);
-    int n = vsnprintf(NULL, 0, fmt, ap);
+    int n = vsnprintf(probe, sizeof probe, fmt, ap);
     va_end(ap);
     if (n < 0) fail(prog_name, "out of memory");
     char *s = xmalloc((size_t)n + 1);
@@ -114,6 +115,8 @@ int write_file(const char *path, const unsigned char *data, size_t len) {
 }
 
 int write_file_atomic(const char *path, const unsigned char *data, size_t len) {
+    char *real = realpath(path, NULL);          /* write through a symbolic link */
+    if (real) path = real;
     char *tmp = xsprintf("%s.tmpXXXXXX", path);
     int fd = mkstemp(tmp);
     if (fd < 0) { int e = errno; free(tmp); errno = e; return -1; }
@@ -127,6 +130,7 @@ int write_file_atomic(const char *path, const unsigned char *data, size_t len) {
     if (ok && rename(tmp, path) != 0) { ok = 0; e = errno; }
     if (!ok) unlink(tmp);
     free(tmp);
+    free(real);
     errno = e;
     return ok ? 0 : -1;
 }
@@ -179,11 +183,11 @@ uint32_t mac_now(void) {
     return (uint32_t)secs;
 }
 
-void mac_date_str(uint32_t t, char out[20]) {
+void mac_date_str(uint32_t t, char out[32]) {
     if (t == 0) { strcpy(out, "-"); return; }
     long days = (long)(t / 86400) - MAC_TO_UNIX_DAYS;
     uint32_t s = t % 86400;
     long y; int m, d;
     date_from_days(days, &y, &m, &d);
-    snprintf(out, 20, "%04ld-%02d-%02d %02u:%02u", y % 10000, m, d, (unsigned)(s / 3600), (unsigned)(s / 60 % 60));
+    snprintf(out, 32, "%04ld-%02d-%02d %02u:%02u", y % 10000, m, d, (unsigned)(s / 3600), (unsigned)(s / 60 % 60));
 }
