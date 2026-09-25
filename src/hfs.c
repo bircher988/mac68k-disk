@@ -556,59 +556,91 @@ void hfs_delete(Volume *v, const Entry *e) {
 
 /* ---- writing back ---- */
 
-/* Makes the catalog file at least 'nodes' nodes long: extends its last
- * extent in place if the blocks behind it are free, else adds an extent
- * (the MDB holds three). Grows by the catalog clump size when there is room. */
+/* Longest free run of blocks (start in *start), searching the whole bitmap. */
+static unsigned longest_run(Hfs *h, unsigned *start) {
+    unsigned bstart = 0, blen = 0;
+    for (unsigned i = 0; i < h->nmalblks;) {
+        if (bm_get(h, i)) { i++; continue; }
+        unsigned j = i;
+        while (j < h->nmalblks && !bm_get(h, j)) j++;
+        if (j - i > blen) { bstart = i; blen = j - i; }
+        i = j;
+    }
+    *start = bstart;
+    return blen;
+}
+
+/* Makes the catalog file at least 'nodes' nodes long. The whole catalog is
+ * rewritten afterwards, so its place is free to choose: extend the last
+ * extent in place if the blocks behind it are free; else add an extent (the
+ * MDB holds three) of at least the catalog's current size; else move the
+ * whole catalog into free space, counting its old blocks as free. Grows by
+ * at least the catalog clump size. */
 static void grow_catalog(Volume *v, uint32_t nodes) {
     Hfs *h = H(v);
     unsigned char *m = h->mdb;
-    uint32_t size = get32(m + MDB_CTFLSIZE);
-    unsigned need = (unsigned)(((uint64_t)nodes * BLK - size + h->blksize - 1) / h->blksize);
-    unsigned clump = get32(m + MDB_CTCLPSIZ) / h->blksize;
-    unsigned want = clump > need ? clump : need;
+    for (int i = 0; i < h->next; i++)
+        if (get32(h->ext[i].key + 2) == CAT_FILE_ID) fail(v->path, "catalog full (the catalog file cannot grow any further)");
     Ext e[3];
     int used = 0;
+    unsigned cur = 0;
     for (int i = 0; i < 3; i++) {
         e[i].start = get16(m + MDB_CTEXTREC + 4 * i);
         e[i].count = get16(m + MDB_CTEXTREC + 4 * i + 2);
+        cur += e[i].count;
         if (e[i].count) used = i + 1;
     }
-    for (int i = 0; i < h->next; i++)
-        if (get32(h->ext[i].key + 2) == CAT_FILE_ID) fail(v->path, "catalog full (the catalog file cannot grow any further)");
-    if (bm_free(h) < need)
+    unsigned total = (unsigned)(((uint64_t)nodes * BLK + h->blksize - 1) / h->blksize);
+    unsigned need = total > cur ? total - cur : 1;
+    unsigned clump = get32(m + MDB_CTCLPSIZ) / h->blksize;
+    if (clump < 1) clump = 1;
+    unsigned want = need > clump ? need : clump;
+    unsigned avail = bm_free(h);
+    if (avail < need)
         fail(v->path, "disk full (the catalog needs %u KB more, %u KB free)", kb((uint64_t)need * h->blksize),
-             (unsigned)((uint64_t)bm_free(h) * h->blksize / 1024));
+             (unsigned)((uint64_t)avail * h->blksize / 1024));
+
+    /* 1. in place */
     unsigned end = used ? e[used - 1].start + e[used - 1].count : 0, run = 0;
     if (used)
         while (end + run < h->nmalblks && run < want && e[used - 1].count + run < 0xFFFF && !bm_get(h, end + run)) run++;
     if (used && run >= need) {
         bm_set(h, end, run, 1);
         e[used - 1].count += run;
-    } else if (used < 3) {
-        unsigned bstart = 0, blen = 0;
-        for (unsigned i = 0; i < h->nmalblks && blen < want;) {
-            if (bm_get(h, i)) { i++; continue; }
-            unsigned j = i;
-            while (j < h->nmalblks && !bm_get(h, j)) j++;
-            if (j - i > blen) { bstart = i; blen = j - i; }
-            i = j;
-        }
-        if (blen < need) fail(v->path, "catalog full (no room to extend the catalog file in one piece)");
-        if (blen > want) blen = want;
-        bm_set(h, bstart, blen, 1);
-        e[used].start = bstart;
-        e[used].count = blen;
-        used++;
     } else {
-        fail(v->path, "catalog full (the catalog file cannot grow any further)");
+        unsigned start, len = longest_run(h, &start);
+        unsigned big = want > cur ? want : cur;           /* double the catalog when adding an extent */
+        if (used < 3 && len >= need) {
+            /* 2. one more extent */
+            if (len > big) len = big;
+            bm_set(h, start, len, 1);
+            e[used].start = start;
+            e[used].count = len;
+            used++;
+        } else {
+            /* 3. move the whole catalog into one run, its old blocks count as free */
+            for (int i = 0; i < used; i++) bm_set(h, e[i].start, e[i].count, 0);
+            unsigned grown = cur + want;
+            len = longest_run(h, &start);
+            if (len < total) {
+                for (int i = 0; i < used; i++) bm_set(h, e[i].start, e[i].count, 1);
+                fail(v->path, "catalog full (no free run of %u KB to move the grown catalog file to)", kb((uint64_t)total * h->blksize));
+            }
+            if (len > grown) len = grown;
+            if (len > 0xFFFF) len = 0xFFFF;
+            memset(e, 0, sizeof e);
+            e[0].start = start;
+            e[0].count = len;
+            bm_set(h, start, len, 1);
+        }
     }
-    uint32_t total = 0;
+    uint32_t size = 0;
     for (int i = 0; i < 3; i++) {
         put16(m + MDB_CTEXTREC + 4 * i, e[i].start);
         put16(m + MDB_CTEXTREC + 4 * i + 2, e[i].count);
-        total += e[i].count;
+        size += e[i].count;
     }
-    put32(m + MDB_CTFLSIZE, total * h->blksize);
+    put32(m + MDB_CTFLSIZE, size * h->blksize);
 }
 
 static void write_catalog(Volume *v) {

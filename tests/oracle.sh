@@ -202,5 +202,42 @@ while IFS= read -r name; do
     "$D" get "$E" ":$name" -o "$TMP/out/o.bin" >/dev/null 2>&1 && good || bad "mac68k-disk cannot find '$name'"
 done < "$TMP/names.shuf"
 
+echo "== oracle 5: fragmented files with extents overflow records (written by hcopy)"
+F=$TMP/frag.dsk
+mkdir -p "$TMP/frag"
+head -c 819200 /dev/zero > "$F"
+run hformat -l "Frag" "$F"
+for i in $(seq 10 69); do head -c 10000 "$IN/big.bin" > "$TMP/frag/s$i.dat"; hcopy -r "$TMP/frag/s$i.dat" ":s$i" || bad "hcopy s$i"; done
+free=$(hvol | sed -n 's/.*has \([0-9]*\) bytes free.*/\1/p')
+head -c $((free - 2048)) /dev/zero > "$TMP/frag/fill.dat"
+run hcopy -r "$TMP/frag/fill.dat" ":Filler"
+for i in $(seq 10 2 69); do hdel ":s$i" || bad "hdel s$i"; done
+$PY mkbin "$TMP/frag/a.bin" --name "Frag A" --type DATA --creator FRAG --data 90000 --rsrc 12000 --seed 11
+$PY mkbin "$TMP/frag/b.bin" --name "Frag B" --type DATA --creator FRAG --data 80000 --rsrc 15000 --seed 12
+run hcopy -m "$TMP/frag/a.bin" ":Frag A"
+run hcopy -m "$TMP/frag/b.bin" ":Frag B"
+humount >/dev/null 2>&1
+check "$F" --foreign
+nrecs=$(python3 -c "
+import struct, sys
+d = open(sys.argv[1], 'rb').read(); m = d[1024:1536]
+off = (struct.unpack_from('>H', m, 0x1C)[0] + struct.unpack_from('>H', m, 0x86)[0]) * 512
+print(struct.unpack_from('>I', d, off + 14 + 6)[0])" "$F")
+[ "$nrecs" -ge 4 ] && good || bad "expected extents overflow records, found $nrecs"
+echo "   extents overflow records written by hcopy: $nrecs"
+run "$D" get "$F" "Frag A" -o "$TMP/out/fa.bin" && same "$TMP/frag/a.bin" "$TMP/out/fa.bin"
+run "$D" get "$F" "Frag B" -o "$TMP/out/fb.bin" && same "$TMP/frag/b.bin" "$TMP/out/fb.bin"
+run "$D" rm "$F" "Frag A"
+check "$F"
+run "$D" get "$F" "Frag B" -o "$TMP/out/fb2.bin" && same "$TMP/frag/b.bin" "$TMP/out/fb2.bin"
+run hmount "$F"
+run hcopy -m ":Frag B" "$TMP/out/fb3.bin" && same "$TMP/frag/b.bin" "$TMP/out/fb3.bin"
+case "$(hls)" in *"Frag A"*) bad "hls still lists Frag A";; *) good;; esac
+humount >/dev/null 2>&1
+before=$(cksum < "$F")
+if out=$("$D" add "$F" "$TMP/frag/a.bin" 2>&1); then bad "adding a file that needs more than 3 extents should fail"
+else case "$out" in *"fragmented"*) good;; *) bad "unexpected message: $out";; esac; fi
+[ "$(cksum < "$F")" = "$before" ] && good || bad "image changed after a failed add"
+
 echo "oracle: $pass passed, $fail failed"
 [ "$fail" = 0 ]

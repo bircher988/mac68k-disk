@@ -471,7 +471,8 @@ def cmd_tree(args):
     c = HfsCheck(open(args[0], 'rb').read())
     c.run()
     d = c.depth['catalog']
-    print(f'depth={d[0]} nodes_used={d[1]} nodes={d[2]}')
+    ext = ','.join(f'{a}+{n}' for a, n in HfsCheck.extrec(c.m, 0x96))
+    print(f'depth={d[0]} nodes_used={d[1]} nodes={d[2]} extents={ext}')
     return 0
 
 

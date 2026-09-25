@@ -230,6 +230,22 @@ run "$D" add "$S" "$TMP/many/File001.bin" "$TMP/many/File004.bin" "$TMP/many/Fil
 run "$D" get "$S" "File 148" -o "$TMP/out/f.bin" && same "$TMP/many/File148.bin" "$TMP/out/f.bin"
 check "$S"
 
+echo "== HFS catalog growth: one file per command until the catalog has to move"
+G=$TMP/grow.dsk
+mkdir -p "$TMP/more"
+$PY mkmany "$TMP/more" 40 More
+run "$D" new "$G" --hfs
+for f in "$TMP"/many/*.bin "$TMP"/more/*.bin; do "$D" add "$G" "$f" > /dev/null || bad "add $f"; done
+check "$G"
+tree=$($PY tree "$G")
+echo "   catalog: $tree"
+case "$tree" in *extents=12+*) bad "the catalog was not moved ($tree)";; *) good;; esac
+[ "$("$D" ls "$G" | wc -l)" = 190 ] && good || bad "190 files expected on the grown disk"
+for f in File001 File150 More040; do
+    n=$(echo "$f" | sed 's/\([A-Za-z]*\)\([0-9]*\)/\1 \2/')
+    run "$D" get "$G" "$n" -o "$TMP/out/g.bin" && same "$TMP/$( [ "${f#More}" = "$f" ] && echo many || echo more )/$f.bin" "$TMP/out/g.bin"
+done
+
 echo "== HFS 400K and 1440K"
 for size in 400k 1440k; do
     img=$TMP/hfs$size.dsk
