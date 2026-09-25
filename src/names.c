@@ -123,25 +123,32 @@ int ostype_parse(const char *in, unsigned char code[4]) {
 
 /* ---- catalog ordering ----
  * Each byte gets a 16-bit sort weight; names compare weight by weight, a
- * shorter name that is a prefix of a longer one comes first. ASCII letters
- * compare without case. Accented letters sort right after their base letter
- * (upper and lower case alike), in the order grave, acute, circumflex,
- * tilde, diaeresis, ring, cedilla, then slashed forms and ligatures. All
- * other characters above 0x7F sort after ASCII, by code. */
-struct accent { unsigned char upper, lower, base, rank; };
-static const struct accent accents[] = {
-    {0xCB, 0x88, 'A', 1}, {0xE7, 0x87, 'A', 2}, {0xE5, 0x89, 'A', 3}, {0xCC, 0x8B, 'A', 4},
-    {0x80, 0x8A, 'A', 5}, {0x81, 0x8C, 'A', 6}, {0xAE, 0xBE, 'A', 8},
-    {0x82, 0x8D, 'C', 7},
-    {0xE9, 0x8F, 'E', 1}, {0x83, 0x8E, 'E', 2}, {0xE6, 0x90, 'E', 3}, {0xE8, 0x91, 'E', 5},
-    {0xED, 0x93, 'I', 1}, {0xEA, 0x92, 'I', 2}, {0xEB, 0x94, 'I', 3}, {0xEC, 0x95, 'I', 5},
-    {0xF5, 0xF5, 'I', 8},
-    {0x84, 0x96, 'N', 4},
-    {0xF1, 0x98, 'O', 1}, {0xEE, 0x97, 'O', 2}, {0xEF, 0x99, 'O', 3}, {0xCD, 0x9B, 'O', 4},
-    {0x85, 0x9A, 'O', 5}, {0xAF, 0xBF, 'O', 8}, {0xCE, 0xCF, 'O', 9},
-    {0xA7, 0xA7, 'S', 8},
-    {0xF4, 0x9D, 'U', 1}, {0xF2, 0x9C, 'U', 2}, {0xF3, 0x9E, 'U', 3}, {0x86, 0x9F, 'U', 5},
-    {0xD9, 0xD8, 'Y', 5},
+ * shorter name that is a prefix of a longer one comes first. The weights
+ * follow the rows of the Macintosh character ordering (Inside Macintosh I,
+ * International Utilities Package): ASCII in code order with lowercase
+ * letters equal to uppercase ones; the non-breaking space equal to the
+ * space; typographic quotes right after the ASCII quote; accented letters of
+ * the original Macintosh character set right after their base letter, a
+ * lowercase letter equal to its uppercase form. Everything else - including
+ * the accented capitals added to the character set later - sorts after
+ * ASCII in code order. The exact order among the accented forms of one
+ * letter is not documented there; see README ("Limitations"). */
+struct variant { unsigned char upper, lower, base, rank; };
+static const struct variant variants[] = {
+    {0xCA, 0xCA, ' ', 0},                                           /* non-breaking space */
+    {0xC7, 0xC7, '"', 1}, {0xC8, 0xC8, '"', 2}, {0xD2, 0xD2, '"', 3}, {0xD3, 0xD3, '"', 4},
+    {0xD4, 0xD4, '\'', 1}, {0xD5, 0xD5, '\'', 2},
+    {0xCB, 0x88, 'A', 1}, {0xCC, 0x8B, 'A', 2}, {0x80, 0x8A, 'A', 3}, {0x81, 0x8C, 'A', 4},
+    {0x87, 0x87, 'A', 5}, {0x89, 0x89, 'A', 6}, {0xBB, 0xBB, 'A', 7}, {0xAE, 0xBE, 'A', 8},
+    {0x82, 0x8D, 'C', 1},
+    {0x83, 0x8E, 'E', 1}, {0x8F, 0x8F, 'E', 2}, {0x90, 0x90, 'E', 3}, {0x91, 0x91, 'E', 4},
+    {0x92, 0x92, 'I', 1}, {0x93, 0x93, 'I', 2}, {0x94, 0x94, 'I', 3}, {0x95, 0x95, 'I', 4},
+    {0x84, 0x96, 'N', 1},
+    {0x85, 0x9A, 'O', 1}, {0xCD, 0x9B, 'O', 2}, {0xAF, 0xBF, 'O', 3}, {0x97, 0x97, 'O', 4},
+    {0x98, 0x98, 'O', 5}, {0x99, 0x99, 'O', 6}, {0xBC, 0xBC, 'O', 7}, {0xCE, 0xCF, 'O', 8},
+    {0xA7, 0xA7, 'S', 1},
+    {0x86, 0x9F, 'U', 1}, {0x9C, 0x9C, 'U', 2}, {0x9D, 0x9D, 'U', 3}, {0x9E, 0x9E, 'U', 4},
+    {0xD8, 0xD8, 'Y', 1},
 };
 
 static uint16_t weight[256];
@@ -149,10 +156,10 @@ static uint16_t weight[256];
 static void init_weights(void) {
     for (int c = 0; c < 256; c++) weight[c] = (uint16_t)(c << 8);
     for (int c = 'a'; c <= 'z'; c++) weight[c] = (uint16_t)((c - 32) << 8);
-    for (size_t i = 0; i < sizeof accents / sizeof accents[0]; i++) {
-        uint16_t w = (uint16_t)((accents[i].base << 8) | accents[i].rank);
-        weight[accents[i].upper] = w;
-        weight[accents[i].lower] = w;
+    for (size_t i = 0; i < sizeof variants / sizeof variants[0]; i++) {
+        uint16_t w = (uint16_t)((variants[i].base << 8) | variants[i].rank);
+        weight[variants[i].upper] = w;
+        weight[variants[i].lower] = w;
     }
 }
 
