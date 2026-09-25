@@ -1,11 +1,10 @@
-# Homebrew formula for mac68k-disk. Lives in a tap (e.g. <user>/homebrew-tap):
-#   brew tap <user>/tap && brew install mac68k-disk
-# Update url/sha256 for each release: shasum -a 256 mac68k-disk-<version>.tar.gz
+# Homebrew formula for mac68k-disk. The published copy lives in github.com/bircher988/homebrew-tap
+# (Formula/mac68k-disk.rb); update url and sha256 there for each release.
 class Mac68kDisk < Formula
-  desc "Disk images for the classic 68k Macintosh (MFS and HFS)"
+  desc "Create and edit MFS and HFS disk images for the classic 68k Macintosh"
   homepage "https://github.com/bircher988/mac68k-disk"
   url "https://github.com/bircher988/mac68k-disk/archive/refs/tags/v1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "4e386131ffd13f9e04d07fe3633bda2e15e2394ce111310f37e4ab9060788728"
   license "MIT"
   head "https://github.com/bircher988/mac68k-disk.git", branch: "main"
 

@@ -8,7 +8,7 @@ apt download without credentials.
    GitHub then serves the source tarball at
    `https://github.com/bircher988/mac68k-disk/archive/refs/tags/v1.0.tar.gz`.
 2. **Homebrew**: put its checksum into `homebrew/mac68k-disk.rb`
-   (`curl -L <tarball> | shasum -a 256`) and copy the formula into the tap repository
+   (`curl -L <tarball> | shasum -a 256`) and copy the formula into the tap repository (it exists:
    `github.com/bircher988/homebrew-tap` as `Formula/mac68k-disk.rb`. Test locally with
    `brew install --build-from-source ./homebrew/mac68k-disk.rb` and
    `brew test mac68k-disk`.
