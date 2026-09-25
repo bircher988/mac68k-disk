@@ -1,0 +1,4 @@
+mac68k-disk
+src/*.o
+*.deb
+__pycache__/
