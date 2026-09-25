@@ -241,7 +241,7 @@ check "$G"
 tree=$($PY tree "$G")
 echo "   catalog: $tree"
 case "$tree" in *extents=12+*) bad "the catalog was not moved ($tree)";; *) good;; esac
-[ "$("$D" ls "$G" | wc -l)" = 190 ] && good || bad "190 files expected on the grown disk"
+[ "$("$D" ls "$G" | wc -l | tr -d " ")" = 190 ] && good || bad "190 files expected on the grown disk"
 for f in File001 File150 More040; do
     n=$(echo "$f" | sed 's/\([A-Za-z]*\)\([0-9]*\)/\1 \2/')
     run "$D" get "$G" "$n" -o "$TMP/out/g.bin" && same "$TMP/$( [ "${f#More}" = "$f" ] && echo many || echo more )/$f.bin" "$TMP/out/g.bin"
