@@ -41,8 +41,8 @@ brew install bircher988/tap/mac68k-disk
 (Raspberry Pi) and amd64 (PC). Download it and install it with apt:
 
 ```
-wget https://github.com/bircher988/mac68k-disk/releases/download/v1.0/mac68k-disk_1.0_arm64.deb
-sudo apt install ./mac68k-disk_1.0_arm64.deb     # or _amd64.deb on a PC
+wget https://github.com/bircher988/mac68k-disk/releases/download/v1.2/mac68k-disk_1.2_arm64.deb
+sudo apt install ./mac68k-disk_1.2_arm64.deb     # or _amd64.deb on a PC
 ```
 
 To build the package yourself: `packaging/debian/build-deb.sh`.
