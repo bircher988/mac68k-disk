@@ -182,7 +182,111 @@ def check_mfs(img):
         problems.append(f'drFreeBks {u16(m, 34)} != {free} free blocks in the map')
     if u16(m, 12) != len(files):
         problems.append(f'drNmFls {u16(m, 12)} != {len(files)} directory entries')
-    return problems, f'MFS: {len(files)} files, {free} of {nmalblks} blocks free'
+    names = [e[51:51 + e[50]].decode('mac_roman').lower() for e in files]
+    for n in set(names):
+        if names.count(n) > 1:
+            problems.append(f'{n}: {names.count(n)} files of that name (MFS names are unique)')
+
+    def fork(e, so, lo):
+        out, ab = b'', u16(e, so)
+        while ab and len(out) < u32(e, lo):
+            off = (alblst + (ab - 2) * (alblksiz // BLK)) * BLK
+            out += img[off:off + alblksiz]
+            ab = amap[ab - 2] if amap[ab - 2] != 1 else 0
+        return out[:u32(e, lo)]
+
+    folders = 0
+    desk = [e for e in files if e[51:51 + e[50]].lower() == b'desktop' and e[2:6] == b'FNDR']
+    if desk:
+        folders, dp = check_desktop(fork(desk[0], 32, 34), files)
+        problems += dp
+        if not u16(desk[0], 10) & 0x4000:
+            problems.append('DeskTop is not invisible')
+    else:
+        for e in files:
+            if s16(e, 16) not in (0, -2, -3):
+                problems.append(f'{e[51:51 + e[50]].decode("mac_roman")}: in folder {s16(e, 16)} but there is no DeskTop file')
+    return problems, f'MFS: {len(files)} files, {folders} folders, {free} of {nmalblks} blocks free'
+
+
+def s16(b, o):
+    v = u16(b, o)
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def parse_rsrc(r):
+    """{(type, id): (name, data)} of a resource fork; raises ValueError."""
+    if not r:
+        return {}
+    doff, moff, dlen, mlen = u32(r, 0), u32(r, 4), u32(r, 8), u32(r, 12)
+    if doff + dlen > len(r) or moff + mlen > len(r):
+        raise ValueError('header points outside the fork')
+    mp = r[moff:moff + mlen]
+    tl, nl = u16(mp, 24), u16(mp, 26)
+    res = {}
+    for t in range(s16(mp, tl) + 1):
+        te = tl + 2 + 8 * t
+        typ, cnt, ref = mp[te:te + 4], u16(mp, te + 4) + 1, tl + u16(mp, te + 6)
+        for k in range(cnt):
+            rr = mp[ref + 12 * k:ref + 12 * k + 12]
+            rid, noff, off = s16(rr, 0), s16(rr, 2), int.from_bytes(rr[5:8], 'big')
+            ln = u32(r, doff + off)
+            if off + 4 + ln > dlen:
+                raise ValueError(f'{typ} {rid}: data outside the fork')
+            name = mp[nl + noff + 1:nl + noff + 1 + mp[nl + noff]] if noff >= 0 else None
+            if (typ, rid) in res:
+                raise ValueError(f'{typ} {rid} twice')
+            res[(typ, rid)] = (name, r[doff + off + 4:doff + off + 4 + ln])
+    return res
+
+
+def check_desktop(fork, files):
+    """The Finder's folders in an MFS DeskTop file (see the top of src/mfs.c)."""
+    problems = []
+    try:
+        res = parse_rsrc(fork)
+    except ValueError as e:
+        return 0, [f'DeskTop: damaged resource fork: {e}']
+    fobj = {rid: d for (t, rid), (n, d) in res.items() if t == b'FOBJ'}
+    folders = {rid: d for rid, d in fobj.items() if rid != 0}
+    if folders and (b'STR ', 0) not in res:
+        problems.append('DeskTop: folders but no STR 0 (the Finder wants to repair the disk)')
+    if folders and 0 not in fobj:
+        problems.append('DeskTop: folders but no FOBJ 0 for the disk')
+    for rid, d in fobj.items():
+        if len(d) < 95 or 95 + d[94] > len(d):
+            problems.append(f'FOBJ {rid}: too short for its name')
+            continue
+        if u16(d, 0) != (4 if rid == 0 else 8):
+            problems.append(f'FOBJ {rid}: kind {u16(d, 0)}')
+        if u16(d, 10) != 0x0100 and not u16(d, 10) & 0x0100:
+            problems.append(f'FOBJ {rid}: not placed ($0100 missing at 10: the window opens as a list)')
+    for rid, d in folders.items():
+        seen, p = {rid}, s16(d, 12)
+        while p not in (0, -2, -3):
+            if p not in folders:
+                problems.append(f'FOBJ {rid}: parent {p} does not exist')
+                break
+            if p in seen:
+                problems.append(f'FOBJ {rid}: folders form a loop')
+                break
+            seen.add(p)
+            p = s16(folders[p], 12)
+    for e in files:
+        f = s16(e, 16)
+        if f not in (0, -2, -3) and f not in folders:
+            problems.append(f'{e[51:51 + e[50]].decode("mac_roman")}: in folder {f}, which does not exist')
+    for rid, d in fobj.items():
+        if len(d) < 62:
+            continue
+        n = sum(1 for e in files if s16(e, 16) == rid and not u16(e, 10) & 0x4000)
+        n += sum(1 for k, x in folders.items() if s16(x, 12) == rid)
+        if u16(d, 60) != n:
+            problems.append(f'FOBJ {rid}: says {u16(d, 60)} items, has {n}')
+        places = [(s16(x, 2), s16(x, 4)) for k, x in folders.items() if s16(x, 12) == rid]
+        if len(set(places)) != len(places):
+            problems.append(f'FOBJ {rid}: two folders at the same place')
+    return len(folders), problems
 
 
 # ----------------------------------------------------------------------- HFS

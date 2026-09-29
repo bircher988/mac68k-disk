@@ -51,6 +51,17 @@ void vol_create(const char *path, FsKind kind, size_t size, const MacName *name)
     free(img);
 }
 
+Volume *vol_new(const char *path, FsKind kind, size_t size, const MacName *name) {
+    Volume *v = xcalloc(1, sizeof *v);
+    v->path = path;
+    v->size = size;
+    v->kind = kind;
+    v->img = xcalloc(size, 1);
+    if (kind == FS_MFS) { mfs_format(v->img, size, name); v->fs = mfs_open(v); }
+    else { hfs_format(v->img, size, name); v->fs = hfs_open(v); }
+    return v;
+}
+
 int vol_max_name(const Volume *v) { return v->kind == FS_MFS ? 63 : 31; }
 
 static int entry_cmp(const void *a, const void *b) {
@@ -61,19 +72,24 @@ static int entry_cmp(const void *a, const void *b) {
 }
 
 int vol_list(Volume *v, uint32_t dir, Entry **out) {
-    int n = v->kind == FS_MFS ? mfs_list(v, out) : hfs_list(v, dir, out);
+    int n = v->kind == FS_MFS ? mfs_list(v, dir, out) : hfs_list(v, dir, out);
     qsort(*out, (size_t)n, sizeof **out, entry_cmp);
     return n;
 }
 
 int vol_find(Volume *v, uint32_t dir, const MacName *name, Entry *e) {
     Entry *list;
-    int n = v->kind == FS_MFS ? mfs_list(v, &list) : hfs_list(v, dir, &list), found = 0;
+    int n = v->kind == FS_MFS ? mfs_list(v, dir, &list) : hfs_list(v, dir, &list), found = 0;
     for (int i = 0; i < n && !found; i++) {
         if (name_cmp(list[i].name.s, list[i].name.len, name->s, name->len) == 0) { *e = list[i]; found = 1; }
     }
     free(list);
     return found;
+}
+
+int vol_find_name(Volume *v, uint32_t dir, const MacName *name, Entry *e) {
+    if (v->kind == FS_MFS && mfs_find_file(v, name, e)) return 1;
+    return vol_find(v, dir, name, e);
 }
 
 void vol_read_fork(Volume *v, const Entry *e, int rsrc, unsigned char **data, uint32_t *len) {
@@ -82,7 +98,7 @@ void vol_read_fork(Volume *v, const Entry *e, int rsrc, unsigned char **data, ui
 }
 
 void vol_add_file(Volume *v, uint32_t dir, const MacFile *f) {
-    if (v->kind == FS_MFS) mfs_add_file(v, f);
+    if (v->kind == FS_MFS) mfs_add_file(v, dir, f);
     else hfs_add_file(v, dir, f);
 }
 
@@ -92,8 +108,12 @@ void vol_delete(Volume *v, const Entry *e) {
 }
 
 void vol_mkdir(Volume *v, uint32_t dir, const MacName *name) {
-    if (v->kind == FS_MFS) fail(v->path, "MFS volumes have no folders (the file system is flat)");
-    hfs_mkdir(v, dir, name);
+    if (v->kind == FS_MFS) mfs_mkdir(v, dir, name);
+    else hfs_mkdir(v, dir, name);
+}
+
+void vol_bless(Volume *v, uint32_t dir) {
+    if (v->kind == FS_HFS) hfs_bless(v, dir);
 }
 
 void vol_info(Volume *v, VolInfo *vi) {
