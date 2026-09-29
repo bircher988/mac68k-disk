@@ -513,6 +513,8 @@ void hfs_mkdir(Volume *v, uint32_t dir, const MacName *name) {
     touch_dir(h, dir, now);
 }
 
+void hfs_bless(Volume *v, uint32_t dir) { put32(H(v)->mdb + MDB_FNDRINFO, dir); }
+
 static void free_fork(Hfs *h, const unsigned char *d, int rsrc) {
     ExtList l;
     fork_extents(h, get32(d + 20), rsrc, d + (rsrc ? 86 : 74), &l);

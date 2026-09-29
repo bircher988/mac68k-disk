@@ -4,7 +4,7 @@ CFLAGS  ?= -O2 -std=c99 -Wall -Wextra
 PREFIX  ?= /usr/local
 BINDIR   = $(PREFIX)/bin
 
-SRC = src/main.c src/util.c src/names.c src/macbin.c src/vol.c src/mfs.c src/hfs.c src/btree.c
+SRC = src/main.c src/util.c src/names.c src/macbin.c src/vol.c src/mfs.c src/hfs.c src/btree.c src/rsrc.c
 OBJ = $(SRC:.c=.o)
 
 all: mac68k-disk

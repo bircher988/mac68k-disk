@@ -56,7 +56,7 @@ In every case `mac68k-disk version` shows what is installed.
 ## Commands
 
 ```
-mac68k-disk new   <image> [--hfs] [--size 400k|800k|1440k] [--name <volume name>]
+mac68k-disk new   <image> [--hfs] [--size 400k|800k|1440k] [--name <volume name>] [--system <startup disk>]
 mac68k-disk add   <image> <file>... [--name <mac name>] [--type TTTT --creator CCCC] [--rsrc <file>] [-f]
 mac68k-disk ls    <image> [-l] [-R] [<folder>]
 mac68k-disk get   <image> <mac name> [-o <out>] [--data|--rsrc]
@@ -73,6 +73,18 @@ image file name without its extension unless `--name` gives one (at most 27
 characters). New disks have no boot blocks - they are data disks. `new` never
 overwrites an existing file.
 
+With `--system <startup disk>` the new disk is a startup disk: it gets the boot blocks
+of the given disk and its system files in a new "System Folder" - the contents of that
+disk's System Folder or, if it has none, every file on it except the applications.
+Add your programs and the Mac boots from it into a tidy desktop:
+
+```
+mac68k-disk new Programs.dsk --system System.dsk   # "Programs": System Folder, nothing else
+mac68k-disk add Programs.dsk Hello.bin Clock.bin
+```
+
+On HFS (`--hfs --system ...`) the folder is blessed, as the Mac needs it.
+
 **add** copies files onto the disk. Each `<file>` is either a MacBinary file (versions
 I, II and III, recognised by their header - the CRC for II and III, the zero fields and
 exact fork lengths for I) or anything else, which becomes the data fork of a new file
@@ -81,7 +93,7 @@ or the file name without a `.bin` extension.
 
 | Option | Effect |
 |---|---|
-| `--name <mac name>` | the name on the disk (one file only); on HFS it may contain a folder path, `Games:Hello`, and a name ending in `:` puts all files into that folder |
+| `--name <mac name>` | the name on the disk (one file only); it may contain a folder path, `Games:Hello`, and a name ending in `:` puts all files into that folder |
 | `--type TTTT --creator CCCC` | set file type and creator (four characters each; either one alone works too) |
 | `--rsrc <file>` | the resource fork, as a raw file (one file only; with `--name` and without a data file it makes a file that only has a resource fork) |
 | `-f` | replace a file of the same name (otherwise that is an error) |
@@ -109,10 +121,10 @@ ZSYS MACS        860     525073  1991-12-16 16:17  System Folder:System
 directory, or `-o` names the output; `--data` or `--rsrc` write just that fork, as it
 is; `-o -` writes to standard output.
 
-**rm** deletes a file, or an empty folder. **mkdir** creates a folder (HFS only - MFS
-has no folders). **info** shows format, volume name, allocation blocks, free space,
-number of files and folders, dates and whether the disk has boot blocks and a System
-Folder.
+**rm** deletes a file, or an empty folder. **mkdir** creates a folder - on MFS a
+folder of the Finder (see below). **info** shows format, volume name, allocation
+blocks, free space, number of files and folders, dates and whether the disk has boot
+blocks and a System Folder.
 
 **startup** shows which application a startup disk opens when the Mac boots from it,
 and with a name sets it. Normally that is the Finder; with your program, the Mac boots
@@ -130,8 +142,10 @@ must be on the disk (on HFS in the System Folder); `-f` sets a name anyway.
 Names on the disk are Mac Roman. Names on the command line are UTF-8 and are converted
 ("Über", "Café"); other bytes are taken as they are. Names are compared the way the
 Mac does it, without regard to case: `get Apps.dsk hello` finds `Hello`. A file or
-folder name has at most 31 characters on HFS and 63 on MFS, and no `:`. On HFS, `:`
-separates folders; a leading `:` is allowed (`:Games:Hello`).
+folder name has at most 31 characters on HFS and 63 on MFS, and no `:`. `:` separates
+folders; a leading `:` is allowed (`:Games:Hello`). On MFS a name is unique on the
+whole disk, whatever folder the file is in, so a plain name finds it anywhere:
+`get Programs.dsk System` works as well as `get Programs.dsk "System Folder:System"`.
 
 Errors name the image and the problem, for example
 `Apps.dsk: disk full (Big File needs 300 KB, 120 KB free)`. Every command reads the
@@ -149,9 +163,17 @@ refused with a clear message, as are partitioned hard-disk images and HFS+ volum
 **MFS** (Inside Macintosh II, File Manager). New 400K volumes have Apple's geometry:
 the master directory block and the 12-bit block map in blocks 2-3, a 12-block file
 directory, 391 allocation blocks of 1 KB. Files are allocated contiguously where
-possible; directory entries never cross a block boundary. The Finder's folders on MFS
-disks are an illusion of the Finder (kept in its Desktop file); `ls` shows the flat
-list of files and new files appear in the disk window.
+possible; directory entries never cross a block boundary.
+
+MFS has no folders of its own - they are an illusion of the Finder, and `mac68k-disk`
+reads and writes them the way the Finder 5.3 does: the invisible file `DeskTop` (type
+`FNDR`, creator `ERIK`) holds one `FOBJ` resource per folder (its ID is the folder
+number; the name, the parent folder, the icon position and the window are in it), plus
+`FOBJ 0` for the disk and `STR 0` ("Finder 1.0"); every file names its folder in the
+`fdFldr` field of its Finder information. New folders get the next free place on the
+Finder's 64-pixel icon grid (the Finder places new files itself, but not folders).
+Removing the `DeskTop` file removes the folders, as in the Finder; the files stay. The
+layout is documented at the top of `src/mfs.c`.
 
 **HFS**. New volumes use the layout of Apple's disk initialization: the volume bitmap
 from sector 3, 512-byte allocation blocks, extents overflow and catalog file of 1/128
@@ -178,12 +200,14 @@ base letter. Existing records keep their order; only new ones are placed.
 (MacBinary I, II and III, raw files, a file with only a resource fork, an empty file, a
 300K file, `--type`/`--creator`/`--rsrc`), comparing name, type, creator, Finder flags
 and both forks bit for bit; replace, remove and add again (the free space must come
-back); folders; 150 files and more in one folder, which forces a three-level catalog
+back); folders on HFS and on MFS; startup disks made with `new --system` from MFS and
+HFS disks, with and without a System Folder; 150 files and more in one folder, which forces a three-level catalog
 B-tree and a catalog that grows and moves; 400K, 800K and 1440K HFS; error paths that
 must leave the image unchanged; install and uninstall. After every change the image is
 checked by `tests/mactest.py`, an independent structure checker for MFS and HFS (block
 chains and bitmaps, B-tree links, key order, node maps, valences, counts, alternate
-MDB).
+MDB; on MFS unique names and the Finder's folders: DeskTop resources, parents, item
+counts, the folder of every file).
 
 If `hfsutils` is installed, `tests/oracle.sh` also checks interoperability: images
 written by `mac68k-disk` are read by `hls`/`hcopy` with identical content, images made
@@ -196,7 +220,10 @@ with System 6.0.8 opens 400K MFS and 800K HFS disks written by `mac68k-disk` and
 the applications on them, boots from a System disk that got a new file, and Apple's
 Disk First Aid reports "No repair necessary" for disks with 150 to 270 files, folders
 and a moved catalog; a Macintosh 512K with the 64K ROM (MFS only) runs applications from
-a 400K disk made by `mac68k-disk`.
+a 400K disk made by `mac68k-disk`, and boots from a startup disk made with
+`new --system`, with nested MFS folders: the Finder 5.3 shows them, opens them, and
+after launching programs, shutting down and starting again there is no request to
+repair the disk. `tests/mactest.py` accepts the DeskTop files the Finder itself wrote.
 
 ## Limitations
 

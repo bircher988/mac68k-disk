@@ -11,7 +11,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-#define MAC68K_DISK_VERSION "1.1"
+#define MAC68K_DISK_VERSION "1.2"
 
 /* Finder flags that describe a file's state on the disk it came from: on the
  * desktop, icon placed (inited), changed, busy. New files start without them
@@ -20,6 +20,7 @@
 
 static void usage(FILE *f) {
     fputs("usage: mac68k-disk new   <image> [--hfs] [--size 400k|800k|1440k] [--name <volume name>]\n"
+          "                         [--system <startup disk>]\n"
           "       mac68k-disk add   <image> <file>... [--name <mac name>] [--type TTTT --creator CCCC]\n"
           "                         [--rsrc <file>] [-f]\n"
           "       mac68k-disk ls    <image> [-l] [-R] [<folder>]\n"
@@ -33,7 +34,9 @@ static void usage(FILE *f) {
           "\n"
           "  new    create an empty disk image: MFS 400K (readable by every 68k Mac) or,\n"
           "         with --hfs, HFS (800k unless --size says otherwise); the volume name\n"
-          "         defaults to the image file name without its extension\n"
+          "         defaults to the image file name without its extension; --system\n"
+          "         makes a startup disk: the boot blocks and the System Folder (the\n"
+          "         system files) of <startup disk>\n"
           "  add    copy files onto the disk; a <file> is MacBinary (I, II or III) or a\n"
           "         raw data fork (type and creator ???? unless --type/--creator);\n"
           "         --name renames (single file) or, ending in ':', picks the folder;\n"
@@ -42,13 +45,14 @@ static void usage(FILE *f) {
           "  get    copy a file to <name>.bin (MacBinary II) or, with --data/--rsrc,\n"
           "         one fork as it is; -o - writes to standard output\n"
           "  rm     delete a file or an empty folder\n"
-          "  mkdir  create a folder (HFS only)\n"
+          "  mkdir  create a folder (on MFS a Finder folder, kept in the Finder's DeskTop file)\n"
           "  info   format, volume name, sizes, free space, dates\n"
           "  startup  show or set the application a startup disk opens when it boots\n"
           "         (Finder = the normal desktop); -f sets a name not found on the disk\n"
           "\n"
           "Images are raw sector images (.dsk, .img) as used by Mini vMac, Basilisk II\n"
-          "and floppy emulators. On HFS, ':' separates folders: \"Games:Hello\".\n", f);
+          "and floppy emulators. ':' separates folders: \"Games:Hello\". On MFS every\n"
+          "name is unique on the whole disk, so a plain name finds a file in any folder.\n", f);
 }
 
 static int bad_usage(void) { usage(stderr); return 2; }
@@ -96,7 +100,6 @@ static uint32_t resolve_parent(Volume *v, const char *path, MacName *leaf) {
     for (;;) {
         const char *c = strchr(p, ':');
         if (!c) break;
-        if (v->kind == FS_MFS) fail(v->path, "MFS volumes have no folders (the file system is flat): \"%s\"", path);
         MacName n = mac_name(v->path, p, (size_t)(c - p), 31, NULL);
         Entry e;
         if (!vol_find(v, dir, &n, &e)) fail(v->path, "no folder \"%.*s\"", (int)(c - path), path);
@@ -128,7 +131,9 @@ static int lookup(Volume *v, const char *path, Entry *e) {
         e->id = ROOT_ID;
         return 1;
     }
-    return vol_find(v, dir, &leaf, e);
+    if (vol_find(v, dir, &leaf, e)) return 1;
+    /* MFS: a plain name finds the file in whatever folder it is */
+    return v->kind == FS_MFS && !strchr(path, ':') && vol_find_name(v, dir, &leaf, e);
 }
 
 static void fourcc(const unsigned char c[4], char out[16]) { ostype_str(c, out); }
@@ -145,13 +150,71 @@ static size_t parse_size(const char *s) {
     return (size_t)n * 1024;
 }
 
+/* The Finder's own files: DeskTop (MFS) and Desktop (HFS). */
+static int finder_file(const Entry *e) {
+    return !e->is_dir && !memcmp(e->finfo, "FNDR", 4) && !memcmp(e->finfo + 4, "ERIK", 4);
+}
+
+/* Makes dst a startup disk: the boot blocks of the startup disk src and its
+ * system files in a new System Folder. The system files are the contents of
+ * src's System Folder (HFS: the blessed folder; MFS: the folder the System
+ * is in) or, on a disk without one, every file but the applications. */
+static void copy_system(Volume *dst, const char *src_path) {
+    Volume *src = vol_open(src_path);
+    if (get16(src->img) != 0x4C4B) fail(src_path, "no boot blocks - not a startup disk");
+    MacName sys = {6, "System"}, folder = {13, "System Folder"};
+    Entry e;
+    uint32_t sysdir = ROOT_ID;
+    if (src->kind == FS_MFS) {
+        if (mfs_find_file(src, &sys, &e)) sysdir = e.parent;
+    } else {
+        VolInfo si;
+        vol_info(src, &si);
+        if (si.blessed.len && vol_find(src, ROOT_ID, &si.blessed, &e) && e.is_dir) sysdir = e.id;
+    }
+    memcpy(dst->img, src->img, 1024);                   /* boot blocks */
+    vol_mkdir(dst, ROOT_ID, &folder);
+    Entry sf;
+    vol_find(dst, ROOT_ID, &folder, &sf);
+    vol_bless(dst, sf.id);
+    Entry *list;
+    int n = vol_list(src, sysdir, &list), copied = 0;
+    for (int i = 0; i < n; i++) {
+        const Entry *x = &list[i];
+        if (x->is_dir) { warn(src_path, "folder \"%s\" in the System Folder not copied", name_str(&x->name)); continue; }
+        if (finder_file(x) || (sysdir == ROOT_ID && !memcmp(x->finfo, "APPL", 4))) continue;
+        MacFile f;
+        memset(&f, 0, sizeof f);
+        unsigned char *d, *r;
+        vol_read_fork(src, x, 0, &d, &f.dlen);
+        vol_read_fork(src, x, 1, &r, &f.rlen);
+        f.data = d;
+        f.rsrc = r;
+        f.name = x->name;
+        memcpy(f.type, x->finfo, 4);
+        memcpy(f.creator, x->finfo + 4, 4);
+        f.flags = get16(x->finfo + 8) & ~(unsigned)FLAGS_TO_CLEAR;
+        f.crdate = x->crdate;
+        f.mddate = x->mddate;
+        vol_add_file(dst, sf.id, &f);
+        free(d);
+        free(r);
+        copied++;
+    }
+    free(list);
+    if (!copied) fail(src_path, "no system files found");
+    printf("%s: startup disk: boot blocks and %d system file%s from %s in \"System Folder\"\n", dst->path, copied,
+           copied == 1 ? "" : "s", src_path);
+}
+
 static int cmd_new(int argc, char **argv) {
     Args pos = {0};
     int hfs = 0;
-    const char *size_s = NULL, *name_s = NULL;
+    const char *size_s = NULL, *name_s = NULL, *system_s = NULL;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--hfs")) hfs = 1;
-        else if (opt_value(argc, argv, &i, "--size", &size_s) || opt_value(argc, argv, &i, "--name", &name_s)) {}
+        else if (opt_value(argc, argv, &i, "--size", &size_s) || opt_value(argc, argv, &i, "--name", &name_s)
+                 || opt_value(argc, argv, &i, "--system", &system_s)) {}
         else if (argv[i][0] == '-' && argv[i][1]) unknown_option(argv[i]);
         else args_add(&pos, argv[i]);
     }
@@ -171,7 +234,12 @@ static int cmd_new(int argc, char **argv) {
         for (int i = 0; i < name.len; i++) if (name.s[i] == ':' || name.s[i] < 0x20) name.s[i] = '_';
     }
     if (path_exists(path)) fail(path, "already exists (delete it first to start over)");
-    vol_create(path, hfs ? FS_HFS : FS_MFS, size, &name);
+    if (system_s) {
+        /* built in memory and written at the end: an error leaves no image behind */
+        Volume *sv = vol_new(path, hfs ? FS_HFS : FS_MFS, size, &name);
+        copy_system(sv, system_s);
+        vol_save(sv);
+    } else vol_create(path, hfs ? FS_HFS : FS_MFS, size, &name);
     Volume *v = vol_open(path);
     VolInfo vi;
     vol_info(v, &vi);
@@ -271,7 +339,7 @@ static int cmd_add(int argc, char **argv) {
 
         Entry old;
         int replaced = 0;
-        if (vol_find(v, dir, &f.name, &old)) {
+        if (vol_find_name(v, dir, &f.name, &old)) {
             if (old.is_dir) fail(v->path, "\"%s\" is a folder", name_str(&f.name));
             if (!force) fail(v->path, "\"%s\" already exists (use -f to replace it)", name_str(&f.name));
             vol_delete(v, &old);
@@ -447,7 +515,6 @@ static int cmd_mkdir(int argc, char **argv) {
     }
     if (pos.n != 2) return bad_usage();
     Volume *v = vol_open(pos.v[0]);
-    if (v->kind == FS_MFS) fail(v->path, "MFS volumes have no folders (the file system is flat); use an HFS disk");
     char *p = strip_colon(pos.v[1]);
     MacName leaf;
     uint32_t dir = resolve_parent(v, p, &leaf);
@@ -471,11 +538,11 @@ static void hello_name(const unsigned char *bb, char *out) {
     name_to_utf8(bb + BB_HELLO + 1, bb[BB_HELLO] > 15 ? 15 : bb[BB_HELLO], out);
 }
 
-/* Is there a file of that name where the system looks for it: the only folder
- * of an MFS disk, on HFS the blessed System Folder (or the root)? */
+/* Is there a file of that name where the system looks for it: anywhere on an
+ * MFS disk, on HFS in the blessed System Folder (or the root)? */
 static int startup_file_exists(Volume *v, const MacName *n) {
     Entry e;
-    if (vol_find(v, ROOT_ID, n, &e) && !e.is_dir) return 1;
+    if (vol_find_name(v, ROOT_ID, n, &e) && !e.is_dir) return 1;
     if (v->kind != FS_HFS) return 0;
     VolInfo vi;
     vol_info(v, &vi);

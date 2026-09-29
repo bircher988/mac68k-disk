@@ -153,8 +153,35 @@ contains "$("$D" info "$M")" 'MFS volume "Test MFS", 400K image' "info"
 contains "$("$D" info "$M")" "391 allocation blocks of 1024 bytes" "info"
 fails "$M" "already exists" "$D" new "$M"
 roundtrip MFS "$M"
-fails "$M" "no folders" "$D" mkdir "$M" Games
-fails "$M" "no folders" "$D" add "$M" "$IN/app.bin" --name "Games:Hello"
+
+echo "== MFS folders (the Finder's, in its DeskTop file)"
+run "$D" mkdir "$M" Games
+check "$M"
+run "$D" add "$M" "$IN/app.bin" --name "Games:Hello"
+run "$D" mkdir "$M" "Games:Old"
+run "$D" mkdir "$M" Tools
+check "$M"
+contains "$("$D" ls -R "$M")" "Games:Hello" "ls -R"
+contains "$("$D" ls -R "$M")" "Games:Old:" "ls -R"
+contains "$("$D" ls -l "$M")" "2 items" "ls -l folder"
+run "$D" get "$M" "Games:Hello" -o "$TMP/out/mfs-games.bin"
+same_but_name "$IN/app.bin" "$TMP/out/mfs-games.bin"
+run "$D" get "$M" Hello -o "$TMP/out/mfs-plain.bin"          # a plain name finds it in any folder
+same_but_name "$IN/app.bin" "$TMP/out/mfs-plain.bin"
+fails "$M" "already exists" "$D" add "$M" "$IN/app.bin" --name "Tools:Hello"   # names are unique on MFS
+fails "$M" "already exists" "$D" mkdir "$M" Games
+fails "$M" "folder not empty" "$D" rm "$M" Games
+run "$D" add -f "$M" "$IN/app.bin" --name "Tools:Hello"     # moves the file along
+contains "$("$D" ls "$M" Tools)" "Hello" "replaced into Tools"
+run "$D" rm "$M" "Games:Old"
+run "$D" rm "$M" Games
+check "$M"
+fails "$M" "no file or folder" "$D" ls "$M" Games
+run "$D" rm "$M" "Tools:Hello"
+run "$D" rm "$M" Tools
+check "$M"
+run "$D" rm "$M" DeskTop                                     # as the Finder: the folders go with it
+check "$M"
 LONG64=$(printf '%064d' 0)
 fails "$M" "longer than 63" "$D" add "$M" "$IN/raw.txt" --name "$LONG64"
 run "$D" add "$M" "$IN/raw.txt" --name "$(printf '%063d' 0)"
@@ -259,6 +286,43 @@ contains "$("$D" info "$TMP/hfs1440k.dsk")" "2874 allocation blocks of 512 bytes
 run "$D" add "$TMP/hfs1440k.dsk" "$IN/large.bin"
 run "$D" get "$TMP/hfs1440k.dsk" Large -o "$TMP/out/l.bin" && same "$IN/large.bin" "$TMP/out/l.bin"
 check "$TMP/hfs1440k.dsk"
+
+echo "== startup disks: new --system"
+$PY mkbin "$IN/system.bin" --name "System" --type ZSYS --creator MACS --flags 0x1000 --data 400 --rsrc 30000 --seed 11
+$PY mkbin "$IN/finder.bin" --name "Finder" --type FNDR --creator MACS --flags 0x1000 --rsrc 20000 --seed 12
+$PY mkbin "$IN/clip.bin"   --name "Clipboard File" --type CLIP --creator MACS --data 8 --seed 13
+S=$TMP/sys-flat.dsk                  # a startup disk without folders, as mac68k-disk made them
+run "$D" new "$S" --name "System Disk"
+python3 -c "
+import sys; f = open(sys.argv[1], 'r+b'); f.write(b'LK' + bytes(range(90)) + b'\x06Finder' + bytes(1024 - 2 - 90 - 7))" "$S"
+run "$D" add "$S" "$IN/system.bin" "$IN/finder.bin" "$IN/clip.bin" "$IN/app.bin"
+fails_new "$TMP/p0.dsk" "no boot blocks" "$D" new "$TMP/p0.dsk" --system "$M"
+P1=$TMP/p1.dsk
+run "$D" new "$P1" --name Programs --system "$S"
+check "$P1"
+contains "$("$D" ls -R "$P1")" "System Folder:System" "system files in the System Folder"
+contains "$("$D" ls -l "$P1" "System Folder")" "Clipboard File" "all non-applications"
+if "$D" ls -R "$P1" | grep -q "Hello App"; then bad "new --system copied an application"; else good; fi
+contains "$("$D" info "$P1")" 'startup   yes (System Folder "System Folder")' "info"
+[ "$(head -c 1024 "$P1" | cksum)" = "$(head -c 1024 "$S" | cksum)" ] && good || bad "boot blocks not copied"
+run "$D" get "$P1" "System Folder:System" -o "$TMP/out/sys1.bin"
+same "$IN/system.bin" "$TMP/out/sys1.bin"
+run "$D" startup "$P1" Finder                                 # found in the System Folder
+run "$D" add "$P1" "$IN/app.bin"
+check "$P1"
+P2=$TMP/p2.dsk                       # from a disk with a System Folder: only its contents
+run "$D" new "$P2" --system "$P1"
+check "$P2"
+if "$D" ls -R "$P2" | grep -q "Hello App"; then bad "new --system copied more than the System Folder"; else good; fi
+contains "$("$D" ls -l "$P2")" "3 items" "System Folder of a folder disk"
+H2=$TMP/p3.dsk                       # onto HFS: the System Folder is blessed
+run "$D" new "$H2" --hfs --system "$P1"
+check "$H2"
+contains "$("$D" info "$H2")" 'startup   yes (System Folder "System Folder")' "blessed on HFS"
+P4=$TMP/p4.dsk                       # from HFS back to MFS
+run "$D" new "$P4" --system "$H2"
+check "$P4"
+contains "$("$D" ls -R "$P4")" "System Folder:Finder" "HFS -> MFS"
 
 echo "== boot blocks, foreign formats"
 B=$TMP/boot.dsk
