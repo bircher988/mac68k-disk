@@ -132,12 +132,15 @@ straight into it - handy for tests in an emulator and for single-purpose disks:
 
 ```
 cp System.dsk Test.dsk                   # a copy of a startup disk
-mac68k-disk add Test.dsk out/Game.bin
+mac68k-disk add Test.dsk out/Game.bin --name "System Folder:"
 mac68k-disk startup Test.dsk Game        # boots into Game; "Finder" restores it
 ```
 
 The name goes into the boot blocks (`bbHelloName`, at most 15 characters). The file
-must be on the disk (on HFS in the System Folder); `-f` sets a name anyway.
+must be on the disk, and on HFS in the System Folder: the Mac looks for it only there
+and starts the Finder when it is missing (on MFS, a disk without folders, a plain
+`add` is enough). `-f` sets a name anyway; `info` and `startup` say when the
+application is not where the Mac looks for it.
 
 Names on the disk are Mac Roman. Names on the command line are UTF-8 and are converted
 ("Über", "Café"); other bytes are taken as they are. Names are compared the way the

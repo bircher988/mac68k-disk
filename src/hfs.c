@@ -747,7 +747,7 @@ void hfs_info(Volume *v, VolInfo *vi) {
     if (vi->folders) vi->folders--;
     uint32_t blessed = get32(m + MDB_FNDRINFO);
     int b = blessed ? cat_find_dir(h, blessed) : -1;
-    if (b >= 0) vi->blessed = h->cat[b].name;
+    if (b >= 0) { vi->blessed = h->cat[b].name; vi->blessed_id = blessed; }
 }
 
 /* A new volume with the geometry Apple's disk initialization uses: bitmap
