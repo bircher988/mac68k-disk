@@ -31,6 +31,7 @@ typedef struct {
     unsigned files, folders;        /* whole volume, the root folder not counted */
     int boot_blocks;                /* boot blocks present ("LK") */
     MacName blessed;                /* HFS: the blessed System Folder; MFS: the folder with the System */
+    uint32_t blessed_id;            /* HFS: its directory ID (0: none) */
     unsigned dir_used, dir_size;    /* MFS: bytes of the file directory */
 } VolInfo;
 

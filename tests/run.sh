@@ -319,6 +319,17 @@ H2=$TMP/p3.dsk                       # onto HFS: the System Folder is blessed
 run "$D" new "$H2" --hfs --system "$P1"
 check "$H2"
 contains "$("$D" info "$H2")" 'startup   yes (System Folder "System Folder")' "blessed on HFS"
+# HFS: the Mac opens the startup application only from the System Folder (System 6 starts the Finder otherwise)
+run "$D" add "$H2" "$IN/app.bin"
+fails "$H2" "\"Hello App\" is not in the System Folder" "$D" startup "$H2" "Hello App"
+run "$D" add "$H2" "$IN/app.bin" --name "System Folder:"
+run "$D" startup "$H2" "Hello App"
+contains "$("$D" info "$H2")" "opens     Hello App" "startup application in the System Folder"
+if "$D" info "$H2" | grep -q "not in the System Folder"; then bad "info: startup application reported missing"; else good; fi
+run "$D" rm "$H2" "System Folder:Hello App"
+contains "$("$D" info "$H2")" "opens     Hello App (not in the System Folder" "info: startup application missing"
+contains "$("$D" startup "$H2")" "(not in the System Folder" "startup: application missing"
+check "$H2"
 P4=$TMP/p4.dsk                       # from HFS back to MFS
 run "$D" new "$P4" --system "$H2"
 check "$P4"
