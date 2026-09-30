@@ -3,8 +3,8 @@
 class Mac68kDisk < Formula
   desc "Create and edit MFS and HFS disk images for the classic 68k Macintosh"
   homepage "https://github.com/bircher988/mac68k-disk"
-  url "https://github.com/bircher988/mac68k-disk/archive/refs/tags/v1.2.tar.gz"
-  sha256 "5a017cf24c4f01f9b20ef34cc4383e79e61e08b7400553eacf3078a5c24a1d68"
+  url "https://github.com/bircher988/mac68k-disk/archive/refs/tags/v1.2.1.tar.gz"
+  sha256 "d99080adc067f8397e2fb55b9eb750dac54152c3161c478f5a4fe2f56b6d3c73"
   license "MIT"
   head "https://github.com/bircher988/mac68k-disk.git", branch: "main"
 
