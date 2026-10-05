@@ -11,7 +11,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-#define MAC68K_DISK_VERSION "1.2.1"
+#define MAC68K_DISK_VERSION "1.2.2"
 
 /* Finder flags that describe a file's state on the disk it came from: on the
  * desktop, icon placed (inited), changed, busy. New files start without them
