@@ -31,9 +31,13 @@
  * a disk whose DeskTop file lacks either.
  *
  * An FOBJ, as the Finder 5.3 writes it (measured): 94 bytes, then the name
- * as a Pascal string.
+ * as a Pascal string that ends the record. Later Finders write 98 bytes before
+ * the name (seen on disks last opened in 1987/88, with records of both kinds
+ * in one DeskTop file); the fields below are the same in both. The resource
+ * also carries the folder's name as its resource name.
  *    0 kind: 8 folder, 4 disk         2 icon position in the parent (v, h)
- *    8 $0083 folder, $0081 disk      10 $0100: icon view, position set
+ *    8 $0083 folder, $0081 disk      10 the view in the high byte: 1 by icon
+ *                                       (what mkdir sets), 2 small icons, 3 by name
  *   12 parent folder (0 = the disk's window, -2 = the desktop)
  *   26 created   30 modified   34 $FFFF   36 $003E
  *   44 window (top, left, bottom, right)   52 $FFF8 $FFF0
@@ -47,7 +51,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FOBJ_FIXED 94
+#define FOBJ_FIXED 94           /* bytes before the name: the Finder 5.3, and what mkdir writes */
+#define FOBJ_FIXED_LATER 98     /* ... in the records of later Finders */
 #define FOLDER_BASE 0x10000u    /* Entry.id of folder n: FOLDER_BASE + (uint16)n */
 #define GRID 64                 /* the Finder's icon grid */
 #define INVISIBLE 0x4000        /* fdFlags */
@@ -198,8 +203,23 @@ static int folder_parent(Mfs *m, const Res *r) {
 static uint32_t folder_dir(int id) { return id == 0 ? ROOT_ID : FOLDER_BASE + (uint16_t)id; }
 static int dir_folder(uint32_t dir) { return dir == ROOT_ID ? 0 : (int16_t)(uint16_t)(dir - FOLDER_BASE); }
 
+/* The folder's name: the Pascal string that ends the record, after a fixed
+ * part of 94 or 98 bytes; if neither fits, the resource's name. */
 static void folder_name(const Res *r, MacName *n) {
-    unsigned l = r->data[FOBJ_FIXED];
+    static const unsigned fixed[] = {FOBJ_FIXED, FOBJ_FIXED_LATER};
+    for (unsigned i = 0; i < sizeof fixed / sizeof *fixed; i++) {
+        unsigned f = fixed[i];
+        if (r->len > f && f + 1 + r->data[f] == r->len) {
+            n->len = r->data[f];
+            memcpy(n->s, r->data + f + 1, n->len);
+            return;
+        }
+    }
+    if (r->has_name) {
+        *n = r->name;
+        return;
+    }
+    unsigned l = r->data[FOBJ_FIXED];           /* damaged: what is there */
     if (FOBJ_FIXED + 1 + l > r->len) l = r->len - FOBJ_FIXED - 1;
     n->len = (unsigned char)l;
     memcpy(n->s, r->data + FOBJ_FIXED + 1, l);

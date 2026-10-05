@@ -51,7 +51,7 @@ static void usage(FILE *f) {
           "         (Finder = the normal desktop); -f sets a name not found on the disk\n"
           "\n"
           "Images are raw sector images (.dsk, .img) as used by Mini vMac, Basilisk II\n"
-          "and floppy emulators. ':' separates folders: \"Games:Hello\". On MFS every\n"
+          "and floppy emulators, or DiskCopy 4.2 images. ':' separates folders: \"Games:Hello\". On MFS every\n"
           "name is unique on the whole disk, so a plain name finds a file in any folder.\n", f);
 }
 
@@ -613,7 +613,11 @@ static int cmd_info(int argc, char **argv) {
     vol_info(v, &vi);
     char date[32];
     uint64_t total = (uint64_t)vi.nblocks * vi.blksize, freeb = (uint64_t)vi.freeblocks * vi.blksize;
-    printf("%s: %s volume \"%s\", %zuK image\n", v->path, vi.kind == FS_MFS ? "MFS" : "HFS", name_str(&vi.name), v->size / 1024);
+    printf("%s: %s volume \"%s\", %zuK %simage\n", v->path, vi.kind == FS_MFS ? "MFS" : "HFS", name_str(&vi.name),
+           v->size / 1024, v->file ? "DiskCopy 4.2 " : "");
+    if (v->file && !v->sums_ok)
+        printf("  image     the checksums in the DiskCopy header do not match the contents (DiskCopy refuses\n"
+               "            such an image; the next change by mac68k-disk sets them right)\n");
     printf("  blocks    %u allocation blocks of %u bytes, %u free\n", vi.nblocks, vi.blksize, vi.freeblocks);
     printf("  space     %u KB free of %u KB\n", (unsigned)(freeb / 1024), (unsigned)(total / 1024));
     if (vi.kind == FS_MFS)

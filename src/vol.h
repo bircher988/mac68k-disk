@@ -37,17 +37,25 @@ typedef struct {
 
 typedef struct Volume {
     const char *path;       /* image file, as given on the command line */
-    unsigned char *img;     /* the whole image in memory */
+    unsigned char *img;     /* the sectors of the whole disk in memory */
     size_t size;
     FsKind kind;
     void *fs;               /* Mfs or Hfs */
+    /* a DiskCopy 4.2 image (NULL for a raw image): the whole file - header,
+     * sectors (img points at them), tag data -, whether its checksums were
+     * right when it was read, and the sectors as they were read */
+    unsigned char *file;
+    size_t file_size;
+    int sums_ok;
+    unsigned char *before;
 } Volume;
 
-/* Opens an image (whole file in memory). Exits with a message on anything it
- * cannot handle: unknown format, DiskCopy header, damaged structures. */
+/* Opens an image (whole file in memory), raw or DiskCopy 4.2. Exits with a
+ * message on anything it cannot handle: unknown format, damaged structures. */
 Volume *vol_open(const char *path);
 /* Writes all changes back: file system structures, then the image file,
- * atomically. */
+ * atomically. A DiskCopy 4.2 image gets its checksums set, and the tags of
+ * the sectors that changed cleared. */
 void vol_save(Volume *v);
 /* Creates a new image file with an empty volume. */
 void vol_create(const char *path, FsKind kind, size_t size, const MacName *name);

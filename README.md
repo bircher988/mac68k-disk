@@ -160,8 +160,16 @@ a duplicate name, a damaged image - never changes the image at all.
 
 The images are raw sector images (`.dsk`, `.img`, ...): 512-byte sectors, no header,
 400K = 409600 bytes, 800K = 819200, 1440K = 1474560. This is what Mini vMac, Basilisk II
-and most floppy emulators use. A DiskCopy 4.2 image (84-byte header) is recognised and
-refused with a clear message, as are partitioned hard-disk images and HFS+ volumes.
+and most floppy emulators use.
+
+**DiskCopy 4.2** images work as well, for every command - the container most old Mac
+software comes in (`.image`, `.img`, sometimes `.dmg`): an 84-byte header in front of
+the sectors, often 12 bytes of tag data per sector behind them. `info` names the format.
+After a change both checksums in the header are set, so that DiskCopy accepts the image,
+and the tags of the sectors that changed are cleared; the image stays a DiskCopy image.
+`new` always makes a raw image. The compressed `.dmg` images of Mac OS X are another
+format and are not supported; partitioned hard-disk images and HFS+ volumes are refused
+with a clear message.
 
 **MFS** (Inside Macintosh II, File Manager). New 400K volumes have Apple's geometry:
 the master directory block and the 12-bit block map in blocks 2-3, a 12-block file
@@ -175,6 +183,8 @@ number; the name, the parent folder, the icon position and the window are in it)
 `FOBJ 0` for the disk and `STR 0` ("Finder 1.0"); every file names its folder in the
 `fdFldr` field of its Finder information. New folders get the next free place on the
 Finder's 64-pixel icon grid (the Finder places new files itself, but not folders).
+Later Finders record a folder with four more bytes in front of its name; such folders
+are read just the same, and both kinds can stand in one `DeskTop` file.
 Removing the `DeskTop` file removes the folders, as in the Finder; the files stay. The
 layout is documented at the top of `src/mfs.c`.
 
@@ -242,8 +252,7 @@ repair the disk. `tests/mactest.py` accepts the DeskTop files the Finder itself 
   there may be placed where the Mac does not expect it.
 - New disks are not startup disks (no boot blocks). To make one, start from a copy of
   an existing startup disk and add to it (`startup` chooses what it opens).
-- MFS: `new` makes 400K volumes only; other MFS images can be read and changed. The
-  Finder's MFS folders are not shown.
+- MFS: `new` makes 400K volumes only; other MFS images can be read and changed.
 - Get Info comments in MacBinary files are ignored; file locking is not shown.
 
 ## Licence
