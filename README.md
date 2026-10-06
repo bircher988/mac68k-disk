@@ -132,14 +132,17 @@ straight into it - handy for tests in an emulator and for single-purpose disks:
 
 ```
 cp System.dsk Test.dsk                   # a copy of a startup disk
-mac68k-disk add Test.dsk out/Game.bin --name "System Folder:"
+mac68k-disk add Test.dsk out/Game.bin
 mac68k-disk startup Test.dsk Game        # boots into Game; "Finder" restores it
 ```
 
-The name goes into the boot blocks (`bbHelloName`, at most 15 characters). The file
-must be on the disk, and on HFS in the System Folder: the Mac looks for it only there
-and starts the Finder when it is missing (on MFS, a disk without folders, a plain
-`add` is enough). `-f` sets a name anyway; `info` and `startup` say when the
+The name goes into the boot blocks (`bbHelloName`, at most 15 characters), and the
+file must be on the disk. On HFS the application can be in any folder
+(`startup Test.dsk "Games:Play"`): its folder is recorded in the volume header, where
+the Mac looks for it - without that entry an application at the top level of the disk
+is not found and the Finder starts instead. A plain name is looked for at the top
+level and then in the System Folder. On MFS, a disk without real folders, the name is
+enough. `-f` sets a name that is not there; `info` and `startup` say when the
 application is not where the Mac looks for it.
 
 Names on the disk are Mac Roman. Names on the command line are UTF-8 and are converted
@@ -183,8 +186,11 @@ number; the name, the parent folder, the icon position and the window are in it)
 `FOBJ 0` for the disk and `STR 0` ("Finder 1.0"); every file names its folder in the
 `fdFldr` field of its Finder information. New folders get the next free place on the
 Finder's 64-pixel icon grid (the Finder places new files itself, but not folders).
-Later Finders record a folder with four more bytes in front of its name; such folders
-are read just the same, and both kinds can stand in one `DeskTop` file.
+Later Finders record a folder with four more bytes in front of its name, and the first
+Finders (the disks of 1984) with a shorter record that has the name only as the
+resource's name; such folders are read just the same, files can be added to them, and
+all kinds can stand in one `DeskTop` file. `mkdir` always writes the record of the
+Finder 5.3 - the Finder 1.1g of 1984 shows and opens such a folder too.
 Removing the `DeskTop` file removes the folders, as in the Finder; the files stay. The
 layout is documented at the top of `src/mfs.c`.
 
@@ -237,6 +243,10 @@ a 400K disk made by `mac68k-disk`, and boots from a startup disk made with
 `new --system`, with nested MFS folders: the Finder 5.3 shows them, opens them, and
 after launching programs, shutting down and starting again there is no request to
 repair the disk. `tests/mactest.py` accepts the DeskTop files the Finder itself wrote.
+A Macintosh 128K with System 1.1 shows a file added to a folder of a 1984 disk, and a
+folder made by `mkdir` on it. The startup application of an HFS disk was tried on a
+Mac Plus with System 3.2 and with System 6.0.8: at the top level, in a folder and in
+the System Folder.
 
 ## Limitations
 

@@ -32,6 +32,8 @@ typedef struct {
     int boot_blocks;                /* boot blocks present ("LK") */
     MacName blessed;                /* HFS: the blessed System Folder; MFS: the folder with the System */
     uint32_t blessed_id;            /* HFS: its directory ID (0: none) */
+    uint32_t startup_dir;           /* HFS: the folder of the startup application (0: not recorded) */
+    MacName startup_folder;         /* ... and its name (empty for the top level of the disk) */
     unsigned dir_used, dir_size;    /* MFS: bytes of the file directory */
 } VolInfo;
 
@@ -75,6 +77,9 @@ void vol_mkdir(Volume *v, uint32_t dir, const MacName *name);
 /* HFS: makes dir the System Folder the Mac starts from (MFS: nothing to do,
  * the System is found anywhere). */
 void vol_bless(Volume *v, uint32_t dir);
+/* HFS: records dir as the folder the startup application is in (MFS: nothing
+ * to do, a file is found by its name alone). */
+void vol_startup_dir(Volume *v, uint32_t dir);
 void vol_info(Volume *v, VolInfo *vi);
 
 /* ---- file system back ends ---- */
@@ -98,6 +103,7 @@ void  hfs_add_file(Volume *v, uint32_t dir, const MacFile *f);
 void  hfs_delete(Volume *v, const Entry *e);
 void  hfs_mkdir(Volume *v, uint32_t dir, const MacName *name);
 void  hfs_bless(Volume *v, uint32_t dir);
+void  hfs_startup_dir(Volume *v, uint32_t dir);
 void  hfs_info(Volume *v, VolInfo *vi);
 
 /* Size in KB, rounded up, for messages. */

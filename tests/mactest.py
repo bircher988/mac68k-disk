@@ -21,6 +21,9 @@
   mactest.py mkmany DIR N [PREFIX]
                               write N small MacBinary files PREFIX001.bin ...
   mactest.py tree IMAGE       print the catalog tree shape of an HFS image
+  mactest.py startupdir IMAGE print the folder an HFS volume header names for the
+                              startup application (drFndrInfo, second long): its
+                              name, ":" for the top level, "-" for none
 """
 import random
 import struct
@@ -259,11 +262,15 @@ def check_desktop(fork, files):
         problems.append('DeskTop: folders but no STR 0 (the Finder wants to repair the disk)')
     if folders and 0 not in fobj:
         problems.append('DeskTop: folders but no FOBJ 0 for the disk')
+    first = set()       # records of the first Finders: 58 bytes, 4 per item, the name on the resource
     for rid, d in fobj.items():
         # the name ends the record, after 94 bytes (Finder 5.3) or 98 (later Finders)
         if not any(len(d) > f and f + 1 + d[f] == len(d) for f in (94, 98)):
-            problems.append(f'FOBJ {rid}: its name does not end the record')
-            continue
+            if res[(b'FOBJ', rid)][0] is not None and len(d) >= 58 and (len(d) - 58) % 4 == 0:
+                first.add(rid)
+            else:
+                problems.append(f'FOBJ {rid}: its name does not end the record')
+                continue
         if u16(d, 0) != (4 if rid == 0 else 8):
             problems.append(f'FOBJ {rid}: kind {u16(d, 0)}')
         if d[10] == 0:      # the view: 1 by icon (what mkdir sets), 2 small icons, 3 by name, ...
@@ -284,7 +291,7 @@ def check_desktop(fork, files):
         if f not in (0, -2, -3) and f not in folders:
             problems.append(f'{e[51:51 + e[50]].decode("mac_roman")}: in folder {f}, which does not exist')
     for rid, d in fobj.items():
-        if len(d) < 62:
+        if len(d) < 62 or rid in first:     # the first Finders keep their own list of items
             continue
         n = sum(1 for e in files if s16(e, 16) == rid and not u16(e, 10) & 0x4000)
         n += sum(1 for k, x in folders.items() if s16(x, 12) == rid)
@@ -513,6 +520,7 @@ class HfsCheck:
                 self.p(f'folder thread {tid} without folder')
         if 2 not in dirs or dirs[2][0] != 1:
             self.p('root folder record missing')
+        self.dirs = dirs
         for par, names in children.items():
             folded = [name_key(n) for n in names]
             if len(set(folded)) != len(folded):
@@ -631,9 +639,17 @@ def cmd_tree(args):
     return 0
 
 
+def cmd_startupdir(args):
+    c = HfsCheck(open(args[0], 'rb').read())
+    c.run()
+    d = u32(c.m, 0x60)
+    print('-' if d == 0 else ':' if d == 2 else c.dirs[d][1].decode('mac_roman') if d in c.dirs else f'? {d}')
+    return 0
+
+
 if __name__ == '__main__':
     cmds = dict(mkbin=cmd_mkbin, cmpbin=cmd_cmpbin, check=cmd_check, tree=cmd_tree, mkmany=cmd_mkmany,
-                mkdc42=cmd_mkdc42)
+                mkdc42=cmd_mkdc42, startupdir=cmd_startupdir)
     if len(sys.argv) < 3 or sys.argv[1] not in cmds:
         print(__doc__)
         sys.exit(2)

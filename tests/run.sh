@@ -213,6 +213,45 @@ same_but_name "$IN/app.bin" "$TMP/out/later.bin"
 run "$D" mkdir "$L" "Tools:Inner"
 run "$D" add "$L" "$IN/raw.txt" --name "Tools:Inner:Raw"
 check "$L"
+
+echo "== MFS folders as the first Finders record them (58 bytes, the name on the resource)"
+F=$TMP/first.dsk
+run "$D" new "$F" --name "First"
+run "$D" mkdir "$F" "Old Tools"
+run "$D" mkdir "$F" "Docs"
+run "$D" add "$F" "$IN/app.bin" --name "Old Tools:Hello"
+# the record of Old Tools rewritten in place: 58 bytes and room for eleven items, the
+# number of items at 56, no name in the record (the resource keeps its name)
+python3 - "$F" <<'PY' || bad "could not rewrite the folder record"
+import sys
+img = bytearray(open(sys.argv[1], 'rb').read())
+name = b'\x09Old Tools'
+rec = [i - 94 for i in range(94, len(img)) if img.startswith(name, i) and img[i - 94:i - 92] == b'\x00\x08']
+assert len(rec) == 1, rec
+r = rec[0]
+assert int.from_bytes(img[r - 4:r], 'big') == 94 + len(name)
+img[r - 4:r] = (58 + 4 * 11).to_bytes(4, 'big')
+img[r + 56:r + 58] = (1).to_bytes(2, 'big')
+img[r + 58:r + 94 + len(name)] = bytes(36 + len(name))
+open(sys.argv[1], 'wb').write(img)
+PY
+check "$F"
+contains "$("$D" ls -R "$F")" "Old Tools:Hello" "ls -R, first record"
+run "$D" get "$F" "Old Tools:Hello" -o "$TMP/out/first.bin"
+same_but_name "$IN/app.bin" "$TMP/out/first.bin"
+run "$D" add "$F" "$IN/raw.txt" --name "Old Tools:Raw"
+run "$D" mkdir "$F" "Old Tools:Inner"
+run "$D" add "$F" "$IN/raw.txt" --name "Old Tools:Inner:Deep"
+check "$F"
+contains "$("$D" ls -R "$F")" "Old Tools:Inner:Deep" "a folder inside a first record"
+fails "$F" "folder not empty" "$D" rm "$F" "Old Tools"
+run "$D" rm "$F" "Old Tools:Inner:Deep"
+run "$D" rm "$F" "Old Tools:Inner"
+run "$D" rm "$F" "Old Tools:Raw"
+run "$D" rm "$F" "Old Tools:Hello"
+run "$D" rm "$F" "Old Tools"
+check "$F"
+case "$("$D" ls -R "$F")" in *"Old Tools"*) bad "first record: the folder is still there";; *) good;; esac
 contains "$("$D" ls -l "$L")" "2 items" "ls -l, later record"
 fails "$L" "already exists" "$D" mkdir "$L" Tools
 run "$D" rm "$L" "Tools:Inner:Raw"
@@ -367,16 +406,44 @@ H2=$TMP/p3.dsk                       # onto HFS: the System Folder is blessed
 run "$D" new "$H2" --hfs --system "$P1"
 check "$H2"
 contains "$("$D" info "$H2")" 'startup   yes (System Folder "System Folder")' "blessed on HFS"
-# HFS: the Mac opens the startup application only from the System Folder (System 6 starts the Finder otherwise)
-run "$D" add "$H2" "$IN/app.bin"
-fails "$H2" "\"Hello App\" is not in the System Folder" "$D" startup "$H2" "Hello App"
+# HFS: the volume header names the folder of the startup application; the Mac finds it
+# there and in the System Folder (System 3.2 and 6.0.8 start the Finder otherwise)
+eq() { [ "$1" = "$2" ] && good || bad "$3: '$1', expected '$2'"; }
+eq "$($PY startupdir "$H2")" "-" "a new startup disk records no folder"
+fails "$H2" 'no file "Hello App" at the top level or in the System Folder' "$D" startup "$H2" "Hello App"
 run "$D" add "$H2" "$IN/app.bin" --name "System Folder:"
+run "$D" startup "$H2" "Hello App"                            # a plain name: also found in the System Folder
+eq "$($PY startupdir "$H2")" "System Folder" "startup application in the System Folder"
+contains "$("$D" info "$H2")" 'opens     Hello App, from the folder "System Folder"' "info, System Folder"
+if "$D" info "$H2" | grep -q "not there"; then bad "info: startup application reported missing"; else good; fi
+run "$D" add "$H2" "$IN/app.bin"                              # ... but first at the top level
 run "$D" startup "$H2" "Hello App"
-contains "$("$D" info "$H2")" "opens     Hello App" "startup application in the System Folder"
-if "$D" info "$H2" | grep -q "not in the System Folder"; then bad "info: startup application reported missing"; else good; fi
+eq "$($PY startupdir "$H2")" ":" "startup application at the top level"
+contains "$("$D" startup "$H2")" 'opens "Hello App" at startup, from the top level of the disk' "startup, top level"
+run "$D" mkdir "$H2" "Games"
+run "$D" add "$H2" "$IN/app.bin" --name "Games:Play"
+run "$D" startup "$H2" "Games:Play"
+eq "$($PY startupdir "$H2")" "Games" "startup application in a folder"
+contains "$("$D" info "$H2")" 'opens     Play, from the folder "Games"' "info, folder"
+check "$H2"
+fails "$H2" 'no file "Games:Nothing" on the disk' "$D" startup "$H2" "Games:Nothing"
+fails "$H2" 'no folder "Nowhere"' "$D" startup "$H2" "Nowhere:Play"
+fails "$H2" "names a folder" "$D" startup "$H2" "Games:"
+fails "$H2" "15 characters" "$D" startup "$H2" "Games:A Name Far Too Long"
+run "$D" startup "$H2" "Games:Soon" -f                        # -f with a path: name and folder
+eq "$($PY startupdir "$H2")" "Games" "startup -f keeps the folder of the path"
+contains "$("$D" startup "$H2")" '"Soon" at startup, from the folder "Games" (not there and not in the System Folder' "startup: application missing"
+contains "$("$D" info "$H2")" 'opens     Soon, from the folder "Games" (not there' "info: startup application missing"
+run "$D" startup "$H2" "Finder"                               # in the System Folder
+eq "$($PY startupdir "$H2")" "System Folder" "back to the Finder"
+run "$D" startup "$H2" "Elsewhere" -f                         # -f with a plain name: the folder stays
+eq "$($PY startupdir "$H2")" "System Folder" "startup -f, plain name"
+run "$D" startup "$H2" "Games:Play"
+run "$D" rm "$H2" "Games:Play"
+run "$D" rm "$H2" "Games"                                     # the folder goes: so does its number in the header
+eq "$($PY startupdir "$H2")" "-" "the folder of the startup application removed"
+run "$D" rm "$H2" "Hello App"
 run "$D" rm "$H2" "System Folder:Hello App"
-contains "$("$D" info "$H2")" "opens     Hello App (not in the System Folder" "info: startup application missing"
-contains "$("$D" startup "$H2")" "(not in the System Folder" "startup: application missing"
 check "$H2"
 P4=$TMP/p4.dsk                       # from HFS back to MFS
 run "$D" new "$P4" --system "$H2"

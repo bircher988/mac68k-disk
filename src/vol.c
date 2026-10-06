@@ -162,6 +162,10 @@ void vol_bless(Volume *v, uint32_t dir) {
     if (v->kind == FS_HFS) hfs_bless(v, dir);
 }
 
+void vol_startup_dir(Volume *v, uint32_t dir) {
+    if (v->kind == FS_HFS) hfs_startup_dir(v, dir);
+}
+
 void vol_info(Volume *v, VolInfo *vi) {
     memset(vi, 0, sizeof *vi);
     vi->kind = v->kind;
