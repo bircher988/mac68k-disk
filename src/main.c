@@ -11,7 +11,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-#define MAC68K_DISK_VERSION "1.2.1"
+#define MAC68K_DISK_VERSION "1.2.2"
 
 /* Finder flags that describe a file's state on the disk it came from: on the
  * desktop, icon placed (inited), changed, busy. New files start without them
@@ -48,10 +48,12 @@ static void usage(FILE *f) {
           "  mkdir  create a folder (on MFS a Finder folder, kept in the Finder's DeskTop file)\n"
           "  info   format, volume name, sizes, free space, dates\n"
           "  startup  show or set the application a startup disk opens when it boots\n"
-          "         (Finder = the normal desktop); -f sets a name not found on the disk\n"
+          "         (Finder = the normal desktop); on HFS the application can be in any\n"
+          "         folder (\"Games:Hello\"), a plain name is looked for at the top level\n"
+          "         and in the System Folder; -f sets a name not found on the disk\n"
           "\n"
           "Images are raw sector images (.dsk, .img) as used by Mini vMac, Basilisk II\n"
-          "and floppy emulators. ':' separates folders: \"Games:Hello\". On MFS every\n"
+          "and floppy emulators, or DiskCopy 4.2 images. ':' separates folders: \"Games:Hello\". On MFS every\n"
           "name is unique on the whole disk, so a plain name finds a file in any folder.\n", f);
 }
 
@@ -539,15 +541,19 @@ static void hello_name(const unsigned char *bb, char *out) {
 }
 
 /* Is there a file of that name where the system looks for it: anywhere on an
- * MFS disk, on HFS only in the blessed System Folder (the root if there is none).
- * System 6 does not find an application in the root of an HFS startup disk and
- * starts the Finder instead (Mac Plus, System 6.0.8). */
+ * MFS disk; on HFS in the folder the volume header names for the startup
+ * application, and in the System Folder (the root if the disk has neither).
+ * Measured on a Mac Plus with System 3.2 and System 6.0.8: without that folder
+ * in the header an application at the top level is not found, and the Finder
+ * starts instead. */
 static int startup_file_exists(Volume *v, const MacName *n) {
     Entry e;
     if (v->kind != FS_HFS) return vol_find_name(v, ROOT_ID, n, &e) && !e.is_dir;
     VolInfo vi;
     vol_info(v, &vi);
-    return vol_find(v, vi.blessed_id ? vi.blessed_id : ROOT_ID, n, &e) && !e.is_dir;
+    if (vi.startup_dir && vol_find(v, vi.startup_dir, n, &e) && !e.is_dir) return 1;
+    if (vi.blessed_id) return vol_find(v, vi.blessed_id, n, &e) && !e.is_dir;
+    return !vi.startup_dir && vol_find(v, ROOT_ID, n, &e) && !e.is_dir;
 }
 
 /* The startup application from the boot blocks, and whether the Mac finds it. */
@@ -559,8 +565,21 @@ static int startup_app(Volume *v, char *s) {
     return startup_file_exists(v, &n);
 }
 
+/* " from the folder ..." for an HFS disk that records the folder, else "". */
+static const char *startup_from(Volume *v) {
+    static char s[160];
+    VolInfo vi;
+    vol_info(v, &vi);
+    s[0] = 0;
+    if (v->kind != FS_HFS || !vi.startup_dir) return s;
+    if (vi.startup_dir == ROOT_ID) snprintf(s, sizeof s, ", from the top level of the disk");
+    else snprintf(s, sizeof s, ", from the folder \"%s\"", name_str(&vi.startup_folder));
+    return s;
+}
+
 static const char *startup_missing(const Volume *v) {
-    return v->kind == FS_HFS ? " (not in the System Folder: the Mac starts the Finder instead)" : " (not on the disk)";
+    return v->kind == FS_HFS ? " (not there and not in the System Folder: the Mac starts the Finder instead)"
+                             : " (not on the disk)";
 }
 
 static int cmd_startup(int argc, char **argv) {
@@ -578,24 +597,39 @@ static int cmd_startup(int argc, char **argv) {
     char s[64];
     if (pos.n == 1) {
         int found = startup_app(v, s);
-        printf("%s: opens \"%s\" at startup%s\n", v->path, s, found ? "" : startup_missing(v));
+        printf("%s: opens \"%s\" at startup%s%s\n", v->path, s, startup_from(v), found ? "" : startup_missing(v));
         return 0;
     }
-    MacName n = mac_name(v->path, pos.v[1], strlen(pos.v[1]), 15, " (the boot blocks have room for 15 characters)");
-    if (!force && !startup_file_exists(v, &n)) {
-        Entry e;
-        if (v->kind == FS_HFS && vol_find(v, ROOT_ID, &n, &e) && !e.is_dir)
-            fail(v->path, "\"%s\" is not in the System Folder: the Mac opens it only from there "
-                 "(add it with --name \"System Folder:\"; -f sets the name anyway)", name_str(&n));
-        fail(v->path, "no file \"%s\" %s (-f sets the name anyway)", name_str(&n),
-             v->kind == FS_HFS ? "in the System Folder" : "on the disk");
+    /* the application: a path; a plain name is also looked for in the System Folder */
+    const char *path = pos.v[1];
+    int plain = !strchr(path, ':');
+    MacName n;
+    uint32_t dir = resolve_parent(v, path, &n);
+    if (!n.len) fail(v->path, "\"%s\" names a folder, not an application", path);
+    if (n.len > 15)
+        fail(v->path, "bad Mac name \"%s\": too long (the boot blocks have room for 15 characters)", name_str(&n));
+    Entry e;
+    int found = (v->kind == FS_MFS && plain ? vol_find_name(v, dir, &n, &e) : vol_find(v, dir, &n, &e)) && !e.is_dir;
+    if (!found && plain && v->kind == FS_HFS) {
+        VolInfo vi;
+        vol_info(v, &vi);
+        if (vi.blessed_id && vol_find(v, vi.blessed_id, &n, &e) && !e.is_dir) {
+            found = 1;
+            dir = vi.blessed_id;
+        }
     }
+    if (!found && !force)
+        fail(v->path, "no file \"%s\" %s (-f sets the name anyway)", path,
+             !plain ? "on the disk" : v->kind == FS_HFS ? "at the top level or in the System Folder" : "on the disk");
     memset(v->img + BB_HELLO, 0, 16);
     v->img[BB_HELLO] = n.len;
     memcpy(v->img + BB_HELLO + 1, n.s, n.len);
+    /* HFS: the folder goes into the volume header; -f with a plain name that
+     * is nowhere leaves the folder as it is */
+    if (found || !plain) vol_startup_dir(v, dir);
     vol_save(v);
     hello_name(v->img, s);
-    printf("%s: opens \"%s\" at startup\n", v->path, s);
+    printf("%s: opens \"%s\" at startup%s\n", v->path, s, startup_from(v));
     return 0;
 }
 
@@ -613,7 +647,11 @@ static int cmd_info(int argc, char **argv) {
     vol_info(v, &vi);
     char date[32];
     uint64_t total = (uint64_t)vi.nblocks * vi.blksize, freeb = (uint64_t)vi.freeblocks * vi.blksize;
-    printf("%s: %s volume \"%s\", %zuK image\n", v->path, vi.kind == FS_MFS ? "MFS" : "HFS", name_str(&vi.name), v->size / 1024);
+    printf("%s: %s volume \"%s\", %zuK %simage\n", v->path, vi.kind == FS_MFS ? "MFS" : "HFS", name_str(&vi.name),
+           v->size / 1024, v->file ? "DiskCopy 4.2 " : "");
+    if (v->file && !v->sums_ok)
+        printf("  image     the checksums in the DiskCopy header do not match the contents (DiskCopy refuses\n"
+               "            such an image; the next change by mac68k-disk sets them right)\n");
     printf("  blocks    %u allocation blocks of %u bytes, %u free\n", vi.nblocks, vi.blksize, vi.freeblocks);
     printf("  space     %u KB free of %u KB\n", (unsigned)(freeb / 1024), (unsigned)(total / 1024));
     if (vi.kind == FS_MFS)
@@ -631,7 +669,7 @@ static int cmd_info(int argc, char **argv) {
     if (vi.boot_blocks) {
         char s[64];
         int found = startup_app(v, s);
-        printf("  opens     %s%s\n", s, found ? "" : startup_missing(v));
+        printf("  opens     %s%s%s\n", s, startup_from(v), found ? "" : startup_missing(v));
     }
     return 0;
 }

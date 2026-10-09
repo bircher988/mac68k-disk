@@ -12,9 +12,18 @@
                               a summary, exit status 1 on problems); --foreign:
                               the image comes from elsewhere, its alternate MDB
                               may be older than the MDB
+                              A DiskCopy 4.2 image has its header and both
+                              checksums verified, then the volume in it.
+  mactest.py mkdc42 RAW OUT [--tags] [--bad-sum]
+                              wrap a raw image in a DiskCopy 4.2 header; --tags:
+                              with tag data (a pattern, no byte zero), --bad-sum:
+                              with a wrong data checksum
   mactest.py mkmany DIR N [PREFIX]
                               write N small MacBinary files PREFIX001.bin ...
   mactest.py tree IMAGE       print the catalog tree shape of an HFS image
+  mactest.py startupdir IMAGE print the folder an HFS volume header names for the
+                              startup application (drFndrInfo, second long): its
+                              name, ":" for the top level, "-" for none
 """
 import random
 import struct
@@ -253,14 +262,19 @@ def check_desktop(fork, files):
         problems.append('DeskTop: folders but no STR 0 (the Finder wants to repair the disk)')
     if folders and 0 not in fobj:
         problems.append('DeskTop: folders but no FOBJ 0 for the disk')
+    first = set()       # records of the first Finders: 58 bytes, 4 per item, the name on the resource
     for rid, d in fobj.items():
-        if len(d) < 95 or 95 + d[94] > len(d):
-            problems.append(f'FOBJ {rid}: too short for its name')
-            continue
+        # the name ends the record, after 94 bytes (Finder 5.3) or 98 (later Finders)
+        if not any(len(d) > f and f + 1 + d[f] == len(d) for f in (94, 98)):
+            if res[(b'FOBJ', rid)][0] is not None and len(d) >= 58 and (len(d) - 58) % 4 == 0:
+                first.add(rid)
+            else:
+                problems.append(f'FOBJ {rid}: its name does not end the record')
+                continue
         if u16(d, 0) != (4 if rid == 0 else 8):
             problems.append(f'FOBJ {rid}: kind {u16(d, 0)}')
-        if u16(d, 10) != 0x0100 and not u16(d, 10) & 0x0100:
-            problems.append(f'FOBJ {rid}: not placed ($0100 missing at 10: the window opens as a list)')
+        if d[10] == 0:      # the view: 1 by icon (what mkdir sets), 2 small icons, 3 by name, ...
+            problems.append(f'FOBJ {rid}: no view ($0100 missing at 10: the window opens as a list)')
     for rid, d in folders.items():
         seen, p = {rid}, s16(d, 12)
         while p not in (0, -2, -3):
@@ -277,7 +291,7 @@ def check_desktop(fork, files):
         if f not in (0, -2, -3) and f not in folders:
             problems.append(f'{e[51:51 + e[50]].decode("mac_roman")}: in folder {f}, which does not exist')
     for rid, d in fobj.items():
-        if len(d) < 62:
+        if len(d) < 62 or rid in first:     # the first Finders keep their own list of items
             continue
         n = sum(1 for e in files if s16(e, 16) == rid and not u16(e, 10) & 0x4000)
         n += sum(1 for k, x in folders.items() if s16(x, 12) == rid)
@@ -506,6 +520,7 @@ class HfsCheck:
                 self.p(f'folder thread {tid} without folder')
         if 2 not in dirs or dirs[2][0] != 1:
             self.p('root folder record missing')
+        self.dirs = dirs
         for par, names in children.items():
             folded = [name_key(n) for n in names]
             if len(set(folded)) != len(folded):
@@ -537,10 +552,53 @@ class HfsCheck:
                         f'{self.depth["catalog"][2]} nodes used')
 
 
+def dc42_sum(d):
+    """DiskCopy 4.2: add every big-endian word, rotate the 32-bit sum right by one."""
+    s = 0
+    for (w,) in struct.iter_unpack('>H', d[:len(d) & ~1]):
+        s = (s + w) & 0xFFFFFFFF
+        s = (s >> 1) | ((s & 1) << 31)
+    return s
+
+
+def dc42_parts(img):
+    """(sectors, tag data) of a DiskCopy 4.2 image, None for any other file."""
+    if len(img) < 84 or img[82:84] != b'\x01\x00' or not 1 <= img[0] <= 63:
+        return None
+    data, tags = u32(img, 64), u32(img, 68)
+    if data % BLK or 84 + data + tags != len(img):
+        return None
+    return img[84:84 + data], img[84 + data:]
+
+
+def cmd_mkdc42(args):
+    raw = open(args[0], 'rb').read()
+    tags = b''
+    if '--tags' in args:
+        tags = bytes((i * 7 + i // 12) % 251 + 1 for i in range(len(raw) // BLK * 12))
+    h = bytearray(84)
+    h[0:5] = b'\x04Test'
+    fmt = {409600: (0, 0x12), 819200: (1, 0x22)}.get(len(raw), (3, 0x22))
+    struct.pack_into('>IIIIBBH', h, 64, len(raw), len(tags), dc42_sum(raw) ^ ('--bad-sum' in args),
+                     dc42_sum(tags[12:]), fmt[0], fmt[1], 0x0100)
+    open(args[1], 'wb').write(bytes(h) + raw + tags)
+    return 0
+
+
 def cmd_check(args):
     foreign = '--foreign' in args
     args = [a for a in args if a != '--foreign']
     img = open(args[0], 'rb').read()
+    dc_problems = []
+    dc = dc42_parts(img)
+    if dc:
+        if u32(img, 72) != dc42_sum(dc[0]):
+            dc_problems.append('DiskCopy 4.2: data checksum wrong')
+        if u32(img, 76) != dc42_sum(dc[1][12:]):
+            dc_problems.append('DiskCopy 4.2: tag checksum wrong')
+        if dc[1] and len(dc[1]) != len(dc[0]) // BLK * 12:
+            dc_problems.append('DiskCopy 4.2: tag data is not 12 bytes per sector')
+        img = dc[0]
     sig = u16(img, 1024)
     if sig == 0xD2D7:
         problems, summary = check_mfs(img)
@@ -552,10 +610,11 @@ def cmd_check(args):
     else:
         print(f'{args[0]}: no MFS or HFS volume')
         return 1
+    problems = dc_problems + problems
     for p in problems:
         print(f'{args[0]}: {p}')
     if not problems:
-        print(f'{args[0]}: ok ({summary})')
+        print(f'{args[0]}: ok ({"DiskCopy 4.2, " if dc else ""}{summary})')
     return 1 if problems else 0
 
 
@@ -580,8 +639,17 @@ def cmd_tree(args):
     return 0
 
 
+def cmd_startupdir(args):
+    c = HfsCheck(open(args[0], 'rb').read())
+    c.run()
+    d = u32(c.m, 0x60)
+    print('-' if d == 0 else ':' if d == 2 else c.dirs[d][1].decode('mac_roman') if d in c.dirs else f'? {d}')
+    return 0
+
+
 if __name__ == '__main__':
-    cmds = dict(mkbin=cmd_mkbin, cmpbin=cmd_cmpbin, check=cmd_check, tree=cmd_tree, mkmany=cmd_mkmany)
+    cmds = dict(mkbin=cmd_mkbin, cmpbin=cmd_cmpbin, check=cmd_check, tree=cmd_tree, mkmany=cmd_mkmany,
+                mkdc42=cmd_mkdc42, startupdir=cmd_startupdir)
     if len(sys.argv) < 3 or sys.argv[1] not in cmds:
         print(__doc__)
         sys.exit(2)

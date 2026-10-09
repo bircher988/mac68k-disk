@@ -9,12 +9,35 @@
 
 unsigned kb(uint64_t bytes) { return (unsigned)((bytes + 1023) / 1024); }
 
-/* DiskCopy 4.2: an 84-byte header (name, data size at 64, tag size at 68,
- * checksums, format bytes, $0100 at 82) in front of the sectors. */
+/* DiskCopy 4.2, the usual container of old Mac floppies (named .image, .img,
+ * sometimes .dmg): an 84-byte header in front of the sectors, and behind them
+ * the sectors' tag data (12 bytes each) or nothing.
+ *    0 disk name (Pascal string in 64 bytes)   64 data size   68 tag size
+ *   72 data checksum   76 tag checksum   80 disk format   81 format byte
+ *   82 $0100
+ * A checksum: every big-endian word is added, then the 32-bit sum rotated
+ * right by one bit. The tag checksum leaves out the first sector's 12 bytes.
+ * (Both rules checked against images made by DiskCopy.) */
+#define DC42_HEADER 84
+#define TAG 12
+
 static int is_diskcopy42(const unsigned char *d, size_t n) {
-    if (n < 84 || d[82] != 0x01 || d[83] != 0x00 || d[0] == 0 || d[0] > 63) return 0;
+    if (n < DC42_HEADER || d[82] != 0x01 || d[83] != 0x00 || d[0] == 0 || d[0] > 63) return 0;
     uint64_t data = get32(d + 64), tags = get32(d + 68);
-    return data % BLK == 0 && 84 + data + tags == n;
+    return data % BLK == 0 && DC42_HEADER + data + tags == n;
+}
+
+static uint32_t dc42_sum(const unsigned char *d, size_t n) {
+    uint32_t s = 0;
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        s += (uint32_t)d[i] << 8 | d[i + 1];
+        s = s >> 1 | s << 31;
+    }
+    return s;
+}
+
+static uint32_t dc42_tag_sum(const unsigned char *tags, size_t n) {
+    return n > TAG ? dc42_sum(tags + TAG, n - TAG) : 0;
 }
 
 Volume *vol_open(const char *path) {
@@ -24,10 +47,18 @@ Volume *vol_open(const char *path) {
         if (errno == ENOENT) fail(path, "no such file (create a disk with: mac68k-disk new %s)", path);
         fail(path, "cannot read: %s", strerror(errno));
     }
-    if (is_diskcopy42(v->img, v->size))
-        fail(path, "DiskCopy 4.2 images are not supported yet (only raw sector images: .dsk, .img)");
+    if (is_diskcopy42(v->img, v->size)) {
+        v->file = v->img;
+        v->file_size = v->size;
+        v->img = v->file + DC42_HEADER;
+        v->size = get32(v->file + 64);
+        v->sums_ok = get32(v->file + 72) == dc42_sum(v->img, v->size)
+                     && get32(v->file + 76) == dc42_tag_sum(v->img + v->size, get32(v->file + 68));
+        v->before = xcalloc(v->size ? v->size : 1, 1);
+        memcpy(v->before, v->img, v->size);
+    }
     if (v->size < 3 * BLK) fail(path, "too small for a Mac disk image");
-    if (v->size % BLK) fail(path, "not a raw disk image (size is not a multiple of 512 bytes)");
+    if (v->size % BLK) fail(path, "not a disk image (neither a DiskCopy 4.2 image nor a multiple of 512 bytes)");
     unsigned sig = get16(v->img + 1024);
     if (sig == 0xD2D7) { v->kind = FS_MFS; v->fs = mfs_open(v); }
     else if (sig == 0x4244) { v->kind = FS_HFS; v->fs = hfs_open(v); }
@@ -40,6 +71,21 @@ Volume *vol_open(const char *path) {
 void vol_save(Volume *v) {
     if (v->kind == FS_MFS) mfs_commit(v);
     else hfs_commit(v);
+    if (v->file) {
+        /* A tag is the file system's note on its sector for a disk scavenger
+         * (file number, fork, sequence, date): where a sector changed, it no
+         * longer holds and is cleared. */
+        unsigned char *tags = v->img + v->size;
+        size_t ntags = get32(v->file + 68);
+        for (size_t s = 0; (s + 1) * TAG <= ntags && (s + 1) * BLK <= v->size; s++)
+            if (memcmp(v->img + s * BLK, v->before + s * BLK, BLK)) memset(tags + s * TAG, 0, TAG);
+        put32(v->file + 72, dc42_sum(v->img, v->size));
+        put32(v->file + 76, dc42_tag_sum(tags, ntags));
+        if (write_file_atomic(v->path, v->file, v->file_size)) fail(v->path, "cannot write: %s", strerror(errno));
+        memcpy(v->before, v->img, v->size);
+        v->sums_ok = 1;
+        return;
+    }
     if (write_file_atomic(v->path, v->img, v->size)) fail(v->path, "cannot write: %s", strerror(errno));
 }
 
@@ -114,6 +160,10 @@ void vol_mkdir(Volume *v, uint32_t dir, const MacName *name) {
 
 void vol_bless(Volume *v, uint32_t dir) {
     if (v->kind == FS_HFS) hfs_bless(v, dir);
+}
+
+void vol_startup_dir(Volume *v, uint32_t dir) {
+    if (v->kind == FS_HFS) hfs_startup_dir(v, dir);
 }
 
 void vol_info(Volume *v, VolInfo *vi) {

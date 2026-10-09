@@ -5,11 +5,13 @@
 # (one with only a resource fork, an empty one, a ~300K one), list them, get
 # them back and compare name, type, creator, Finder flags and both forks
 # bit for bit; replace, remove and re-add (free space must come back); error
-# paths (disk full, duplicate names, bad names, DiskCopy images) must leave
-# the image unchanged; startup sets the boot blocks' startup application. HFS also gets folders and a stress test with 150
-# files that forces a multi-level catalog B-tree. After every change the
-# image is verified by tests/mactest.py, a structure checker written
-# independently of the C code.
+# paths (disk full, duplicate names, bad names) must leave the image
+# unchanged; startup sets the boot blocks' startup application. MFS gets the
+# Finder's folders, also as later Finders record them; HFS gets folders and a
+# stress test with 150 files that forces a multi-level catalog B-tree.
+# DiskCopy 4.2 images: both checksums, the tag data, the header. After every
+# change the image is verified by tests/mactest.py, a structure checker
+# written independently of the C code.
 # MAC68K_TEST_DISKS=<dir> adds tests on copies of the images in <dir>.
 # At the end, tests/oracle.sh runs the interoperability tests with hfsutils
 # if it is installed.
@@ -182,6 +184,91 @@ run "$D" rm "$M" Tools
 check "$M"
 run "$D" rm "$M" DeskTop                                     # as the Finder: the folders go with it
 check "$M"
+
+echo "== MFS folders as later Finders record them (98 bytes before the name)"
+L=$TMP/later.dsk
+run "$D" new "$L" --name "Later"
+run "$D" mkdir "$L" "XXXXTools"
+run "$D" mkdir "$L" "Docs"
+run "$D" add "$L" "$IN/app.bin" --name "XXXXTools:Hello"
+# the record of XXXXTools rewritten in place: four more bytes before the name, which is
+# now "Tools" (the record keeps its length), and the resource's name with it
+python3 - "$L" <<'PY' || bad "could not rewrite the folder record"
+import sys
+img = bytearray(open(sys.argv[1], 'rb').read())
+old = b'\x09XXXXTools'
+at = [i for i in range(len(img)) if img.startswith(old, i)]
+rec = [i for i in at if img[i - 94:i - 92] == b'\x00\x08']
+name = [i for i in at if i not in rec]
+assert len(rec) == 1 and len(name) == 1, (rec, name)
+img[rec[0]:rec[0] + 10] = b'\x00\x00\x00\x00\x05Tools'
+img[name[0]:name[0] + 6] = b'\x05Tools'
+open(sys.argv[1], 'wb').write(img)
+PY
+check "$L"
+contains "$("$D" ls -R "$L")" "Tools:Hello" "ls -R, later record"
+case "$("$D" ls -R "$L")" in *XXXX*) bad "later record: the old name still shows";; *) good;; esac
+run "$D" get "$L" "Tools:Hello" -o "$TMP/out/later.bin"
+same_but_name "$IN/app.bin" "$TMP/out/later.bin"
+run "$D" mkdir "$L" "Tools:Inner"
+run "$D" add "$L" "$IN/raw.txt" --name "Tools:Inner:Raw"
+check "$L"
+
+echo "== MFS folders as the first Finders record them (58 bytes, the name on the resource)"
+F=$TMP/first.dsk
+run "$D" new "$F" --name "First"
+run "$D" mkdir "$F" "Old Tools"
+run "$D" mkdir "$F" "Docs"
+run "$D" add "$F" "$IN/app.bin" --name "Old Tools:Hello"
+# the record of Old Tools rewritten in place: 58 bytes and room for eleven items, the
+# number of items at 56, no name in the record (the resource keeps its name)
+python3 - "$F" <<'PY' || bad "could not rewrite the folder record"
+import sys
+img = bytearray(open(sys.argv[1], 'rb').read())
+name = b'\x09Old Tools'
+rec = [i - 94 for i in range(94, len(img)) if img.startswith(name, i) and img[i - 94:i - 92] == b'\x00\x08']
+assert len(rec) == 1, rec
+r = rec[0]
+assert int.from_bytes(img[r - 4:r], 'big') == 94 + len(name)
+img[r - 4:r] = (58 + 4 * 11).to_bytes(4, 'big')
+img[r + 56:r + 58] = (1).to_bytes(2, 'big')
+img[r + 58:r + 94 + len(name)] = bytes(36 + len(name))
+open(sys.argv[1], 'wb').write(img)
+PY
+check "$F"
+contains "$("$D" ls -R "$F")" "Old Tools:Hello" "ls -R, first record"
+run "$D" get "$F" "Old Tools:Hello" -o "$TMP/out/first.bin"
+same_but_name "$IN/app.bin" "$TMP/out/first.bin"
+run "$D" add "$F" "$IN/raw.txt" --name "Old Tools:Raw"
+run "$D" mkdir "$F" "Old Tools:Inner"
+run "$D" add "$F" "$IN/raw.txt" --name "Old Tools:Inner:Deep"
+check "$F"
+contains "$("$D" ls -R "$F")" "Old Tools:Inner:Deep" "a folder inside a first record"
+fails "$F" "folder not empty" "$D" rm "$F" "Old Tools"
+run "$D" rm "$F" "Old Tools:Inner:Deep"
+run "$D" rm "$F" "Old Tools:Inner"
+run "$D" rm "$F" "Old Tools:Raw"
+run "$D" rm "$F" "Old Tools:Hello"
+run "$D" rm "$F" "Old Tools"
+check "$F"
+case "$("$D" ls -R "$F")" in *"Old Tools"*) bad "first record: the folder is still there";; *) good;; esac
+contains "$("$D" ls -l "$L")" "2 items" "ls -l, later record"
+fails "$L" "already exists" "$D" mkdir "$L" Tools
+run "$D" rm "$L" "Tools:Inner:Raw"
+run "$D" rm "$L" "Tools:Inner"
+run "$D" rm "$L" "Tools:Hello"
+run "$D" rm "$L" Tools
+check "$L"
+# a record whose own name fits neither way: the resource's name counts
+python3 - "$L" <<'PY' || bad "could not damage the folder record"
+import sys
+img = bytearray(open(sys.argv[1], 'rb').read())
+rec = [i for i in range(len(img)) if img.startswith(b'\x04Docs', i) and img[i - 94:i - 92] == b'\x00\x08']
+assert len(rec) == 1, rec
+img[rec[0]] = 0x7F
+open(sys.argv[1], 'wb').write(img)
+PY
+contains "$("$D" ls "$L")" "Docs:" "folder name from the resource name"
 LONG64=$(printf '%064d' 0)
 fails "$M" "longer than 63" "$D" add "$M" "$IN/raw.txt" --name "$LONG64"
 run "$D" add "$M" "$IN/raw.txt" --name "$(printf '%063d' 0)"
@@ -319,16 +406,44 @@ H2=$TMP/p3.dsk                       # onto HFS: the System Folder is blessed
 run "$D" new "$H2" --hfs --system "$P1"
 check "$H2"
 contains "$("$D" info "$H2")" 'startup   yes (System Folder "System Folder")' "blessed on HFS"
-# HFS: the Mac opens the startup application only from the System Folder (System 6 starts the Finder otherwise)
-run "$D" add "$H2" "$IN/app.bin"
-fails "$H2" "\"Hello App\" is not in the System Folder" "$D" startup "$H2" "Hello App"
+# HFS: the volume header names the folder of the startup application; the Mac finds it
+# there and in the System Folder (System 3.2 and 6.0.8 start the Finder otherwise)
+eq() { [ "$1" = "$2" ] && good || bad "$3: '$1', expected '$2'"; }
+eq "$($PY startupdir "$H2")" "-" "a new startup disk records no folder"
+fails "$H2" 'no file "Hello App" at the top level or in the System Folder' "$D" startup "$H2" "Hello App"
 run "$D" add "$H2" "$IN/app.bin" --name "System Folder:"
+run "$D" startup "$H2" "Hello App"                            # a plain name: also found in the System Folder
+eq "$($PY startupdir "$H2")" "System Folder" "startup application in the System Folder"
+contains "$("$D" info "$H2")" 'opens     Hello App, from the folder "System Folder"' "info, System Folder"
+if "$D" info "$H2" | grep -q "not there"; then bad "info: startup application reported missing"; else good; fi
+run "$D" add "$H2" "$IN/app.bin"                              # ... but first at the top level
 run "$D" startup "$H2" "Hello App"
-contains "$("$D" info "$H2")" "opens     Hello App" "startup application in the System Folder"
-if "$D" info "$H2" | grep -q "not in the System Folder"; then bad "info: startup application reported missing"; else good; fi
+eq "$($PY startupdir "$H2")" ":" "startup application at the top level"
+contains "$("$D" startup "$H2")" 'opens "Hello App" at startup, from the top level of the disk' "startup, top level"
+run "$D" mkdir "$H2" "Games"
+run "$D" add "$H2" "$IN/app.bin" --name "Games:Play"
+run "$D" startup "$H2" "Games:Play"
+eq "$($PY startupdir "$H2")" "Games" "startup application in a folder"
+contains "$("$D" info "$H2")" 'opens     Play, from the folder "Games"' "info, folder"
+check "$H2"
+fails "$H2" 'no file "Games:Nothing" on the disk' "$D" startup "$H2" "Games:Nothing"
+fails "$H2" 'no folder "Nowhere"' "$D" startup "$H2" "Nowhere:Play"
+fails "$H2" "names a folder" "$D" startup "$H2" "Games:"
+fails "$H2" "15 characters" "$D" startup "$H2" "Games:A Name Far Too Long"
+run "$D" startup "$H2" "Games:Soon" -f                        # -f with a path: name and folder
+eq "$($PY startupdir "$H2")" "Games" "startup -f keeps the folder of the path"
+contains "$("$D" startup "$H2")" '"Soon" at startup, from the folder "Games" (not there and not in the System Folder' "startup: application missing"
+contains "$("$D" info "$H2")" 'opens     Soon, from the folder "Games" (not there' "info: startup application missing"
+run "$D" startup "$H2" "Finder"                               # in the System Folder
+eq "$($PY startupdir "$H2")" "System Folder" "back to the Finder"
+run "$D" startup "$H2" "Elsewhere" -f                         # -f with a plain name: the folder stays
+eq "$($PY startupdir "$H2")" "System Folder" "startup -f, plain name"
+run "$D" startup "$H2" "Games:Play"
+run "$D" rm "$H2" "Games:Play"
+run "$D" rm "$H2" "Games"                                     # the folder goes: so does its number in the header
+eq "$($PY startupdir "$H2")" "-" "the folder of the startup application removed"
+run "$D" rm "$H2" "Hello App"
 run "$D" rm "$H2" "System Folder:Hello App"
-contains "$("$D" info "$H2")" "opens     Hello App (not in the System Folder" "info: startup application missing"
-contains "$("$D" startup "$H2")" "(not in the System Folder" "startup: application missing"
 check "$H2"
 P4=$TMP/p4.dsk                       # from HFS back to MFS
 run "$D" new "$P4" --system "$H2"
@@ -357,14 +472,46 @@ run "$D" startup "$B" Elsewhere -f
 contains "$("$D" startup "$B")" "opens \"Elsewhere\"" "startup -f"
 check "$B"
 fails "$M" "no boot blocks" "$D" startup "$M" Finder
-python3 -c "
-import struct, sys
-data = open(sys.argv[1], 'rb').read()
-h = bytearray(84); h[0] = 4; h[1:5] = b'Test'
-struct.pack_into('>II', h, 64, len(data), 0); h[80] = 0; h[81] = 0x12; h[82] = 1; h[83] = 0
-open(sys.argv[2], 'wb').write(bytes(h) + data)" "$M" "$TMP/dc42.image"
-fails "$TMP/dc42.image" "DiskCopy 4.2 images are not supported yet" "$D" ls "$TMP/dc42.image"
-fails "$TMP/dc42.image" "DiskCopy 4.2 images are not supported yet" "$D" add "$TMP/dc42.image" "$IN/app.bin"
+echo "== DiskCopy 4.2 images"
+DC=$TMP/dc42.image
+run $PY mkdc42 "$M" "$DC" --tags
+check "$DC"
+contains "$("$D" info "$DC")" "400K DiskCopy 4.2 image" "info of a DiskCopy image"
+[ "$("$D" ls -l -R "$DC")" = "$("$D" ls -l -R "$M")" ] && good || bad "ls of the DiskCopy image differs from the raw image"
+cp "$DC" "$TMP/dc42.before"
+run "$D" add "$DC" "$IN/app.bin" --name "DC App"
+check "$DC"                                                  # the checker verifies both checksums
+run "$D" get "$DC" "DC App" -o "$TMP/out/dc.bin" && same_but_name "$IN/app.bin" "$TMP/out/dc.bin"
+# header and size stay, the tags of the changed sectors are cleared, the others kept
+python3 - "$TMP/dc42.before" "$DC" <<'PY' && good || bad "DiskCopy image after add: header, size or tags"
+import sys
+a, b = (open(f, 'rb').read() for f in sys.argv[1:3])
+assert len(a) == len(b) and a[:72] == b[:72] and a[80:84] == b[80:84], 'header or size'
+n = (len(a) - 84) // (512 + 12)
+changed = [s for s in range(n) if a[84 + s * 512:84 + (s + 1) * 512] != b[84 + s * 512:84 + (s + 1) * 512]]
+tag = lambda x, s: x[84 + n * 512 + s * 12:84 + n * 512 + (s + 1) * 12]
+assert changed, 'nothing changed'
+assert all(tag(b, s) == bytes(12) for s in changed), 'tag of a changed sector not cleared'
+assert all(tag(b, s) == tag(a, s) for s in range(n) if s not in changed), 'tag of an unchanged sector touched'
+PY
+run "$D" mkdir "$DC" "DC Folder"
+run "$D" add -f "$DC" "$IN/app.bin" --name "DC Folder:DC App"
+check "$DC"
+run "$D" rm "$DC" "DC Folder:DC App"
+run "$D" rm "$DC" "DC Folder"
+check "$DC"
+fails "$DC" "no file or folder" "$D" rm "$DC" "DC App"
+run $PY mkdc42 "$H" "$TMP/dc42h.image"                       # HFS, without tag data
+contains "$("$D" info "$TMP/dc42h.image")" "800K DiskCopy 4.2 image" "info of an HFS DiskCopy image"
+run "$D" add "$TMP/dc42h.image" "$IN/app.bin" --name "DC App"
+check "$TMP/dc42h.image"
+[ "$(wc -c < "$TMP/dc42h.image" | tr -d ' ')" = 819284 ] && good || bad "size of the HFS DiskCopy image"
+run $PY mkdc42 "$M" "$TMP/dc42bad.image" --bad-sum           # a wrong checksum: told, and set right by a change
+contains "$("$D" info "$TMP/dc42bad.image")" "do not match" "info names the wrong checksum"
+$PY check "$TMP/dc42bad.image" > /dev/null && bad "the checker accepts a wrong checksum" || good
+run "$D" add "$TMP/dc42bad.image" "$IN/app.bin" --name "DC App"
+check "$TMP/dc42bad.image"
+case "$("$D" info "$TMP/dc42bad.image")" in *"do not match"*) bad "checksum still reported wrong";; *) good;; esac
 head -c 409600 /dev/zero > "$TMP/zero.dsk"
 fails "$TMP/zero.dsk" "no MFS or HFS volume" "$D" ls "$TMP/zero.dsk"
 fails_new "$TMP/missing.dsk" "no such file" "$D" ls "$TMP/missing.dsk"
@@ -385,6 +532,7 @@ if [ -n "${MAC68K_TEST_DISKS:-}" ]; then
             "$D" get "$img" ":$f" -o "$TMP/out/x.bin" > /dev/null && n=$((n + 1)) || bad "$(basename "$src"): get $f"
         done < "$TMP/files.txt"
         echo "   $(basename "$src"): $(head -1 "$TMP/info.txt" | sed 's/^[^:]*: //'), $n files read"
+        if [ "$(free_blocks "$img")" -lt 8 ]; then echo "   (full: no add, get and rm)"; continue; fi
         run "$D" add "$img" "$IN/app.bin" --name "Test App"
         run "$D" get "$img" "Test App" -o "$TMP/out/t.bin" && same_but_name "$IN/app.bin" "$TMP/out/t.bin"
         check "$img"

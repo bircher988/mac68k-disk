@@ -513,7 +513,10 @@ void hfs_mkdir(Volume *v, uint32_t dir, const MacName *name) {
     touch_dir(h, dir, now);
 }
 
+/* drFndrInfo: the first long is the System Folder, the second the folder of
+ * the startup application. */
 void hfs_bless(Volume *v, uint32_t dir) { put32(H(v)->mdb + MDB_FNDRINFO, dir); }
+void hfs_startup_dir(Volume *v, uint32_t dir) { put32(H(v)->mdb + MDB_FNDRINFO + 4, dir); }
 
 static void free_fork(Hfs *h, const unsigned char *d, int rsrc) {
     ExtList l;
@@ -538,6 +541,7 @@ void hfs_delete(Volume *v, const Entry *e) {
         int th = cat_find_thread(h, id, REC_DTHREAD);
         if (th >= 0) cat_remove(h, th);
         if (get32(h->mdb + MDB_FNDRINFO) == id) put32(h->mdb + MDB_FNDRINFO, 0);
+        if (get32(h->mdb + MDB_FNDRINFO + 4) == id) put32(h->mdb + MDB_FNDRINFO + 4, 0);
     } else {
         uint32_t id = get32(d + 20);
         free_fork(h, d, 0);
@@ -748,6 +752,12 @@ void hfs_info(Volume *v, VolInfo *vi) {
     uint32_t blessed = get32(m + MDB_FNDRINFO);
     int b = blessed ? cat_find_dir(h, blessed) : -1;
     if (b >= 0) { vi->blessed = h->cat[b].name; vi->blessed_id = blessed; }
+    uint32_t sd = get32(m + MDB_FNDRINFO + 4);
+    int s = sd ? cat_find_dir(h, sd) : -1;
+    if (s >= 0) {
+        vi->startup_dir = sd;
+        if (sd != ROOT_ID) vi->startup_folder = h->cat[s].name;
+    }
 }
 
 /* A new volume with the geometry Apple's disk initialization uses: bitmap

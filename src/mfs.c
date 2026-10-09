@@ -31,23 +31,36 @@
  * a disk whose DeskTop file lacks either.
  *
  * An FOBJ, as the Finder 5.3 writes it (measured): 94 bytes, then the name
- * as a Pascal string.
+ * as a Pascal string that ends the record. Later Finders write 98 bytes before
+ * the name (seen on disks last opened in 1987/88, with records of both kinds
+ * in one DeskTop file); the fields below are the same in both. The resource
+ * also carries the folder's name as its resource name.
  *    0 kind: 8 folder, 4 disk         2 icon position in the parent (v, h)
- *    8 $0083 folder, $0081 disk      10 $0100: icon view, position set
+ *    8 $0083 folder, $0081 disk      10 the view in the high byte: 1 by icon
+ *                                       (what mkdir sets), 2 small icons, 3 by name
  *   12 parent folder (0 = the disk's window, -2 = the desktop)
  *   26 created   30 modified   34 $FFFF   36 $003E
  *   44 window (top, left, bottom, right)   52 $FFF8 $FFF0
  *   60 number of items (visible files and folders)
  * The other bytes are the Finder's working state (scroll positions, handles);
  * zero works. The Finder places new files itself but not folders, so a new
- * folder gets the next free place of its 64-pixel grid. */
+ * folder gets the next free place of its 64-pixel grid.
+ *
+ * The first Finders (1.0, 1.1g; the disks of 1984) write a shorter record:
+ * 58 bytes, with kind, position, parent, dates and window where they are
+ * above and the number of items at 56, then four bytes per item (handles of
+ * the session that wrote them, room for more than there are items). The
+ * folder's name is only the resource's name. Such folders are read; mkdir
+ * writes the record of the Finder 5.3 whatever the disk has. */
 #include "rsrc.h"
 #include "util.h"
 #include "vol.h"
 #include <stdlib.h>
 #include <string.h>
 
-#define FOBJ_FIXED 94
+#define FOBJ_FIXED 94           /* bytes before the name: the Finder 5.3, and what mkdir writes */
+#define FOBJ_FIXED_LATER 98     /* ... in the records of later Finders */
+#define FOBJ_FIRST 58           /* the first Finders: this, then four bytes per item, no name */
 #define FOLDER_BASE 0x10000u    /* Entry.id of folder n: FOLDER_BASE + (uint16)n */
 #define GRID 64                 /* the Finder's icon grid */
 #define INVISIBLE 0x4000        /* fdFlags */
@@ -177,11 +190,27 @@ static void desk_load(Volume *v) {
     free(d);
 }
 
+/* Where the name is in a FOBJ: the number of bytes before the Pascal string
+ * that ends the record (94 or 98), or 0 for a record that has the name only
+ * as the resource's name. */
+static unsigned fobj_name_at(const Res *r) {
+    static const unsigned fixed[] = {FOBJ_FIXED, FOBJ_FIXED_LATER};
+    for (unsigned i = 0; i < sizeof fixed / sizeof *fixed; i++)
+        if (r->len > fixed[i] && fixed[i] + 1 + r->data[fixed[i]] == r->len) return fixed[i];
+    return 0;
+}
+
+/* A record of the first Finders (1.0, 1.1g): the fixed part, the items, and
+ * the name on the resource. */
+static int fobj_is_first(const Res *r) {
+    return !fobj_name_at(r) && r->has_name && r->len >= FOBJ_FIRST && (r->len - FOBJ_FIRST) % 4 == 0;
+}
+
 /* The FOBJ of folder id (not the disk's), NULL if there is none. */
 static Res *folder_res(Mfs *m, int id) {
     if (m->desk_state != 1 || id == 0) return NULL;
     Res *r = rsrc_get(&m->desk, "FOBJ", id);
-    return r && r->len > FOBJ_FIXED && get16(r->data) == 8 ? r : NULL;
+    return r && (r->len > FOBJ_FIXED || fobj_is_first(r)) && get16(r->data) == 8 ? r : NULL;
 }
 
 /* Folder of a file / of a folder; 0 (the disk's window) for unknown ones. */
@@ -198,8 +227,20 @@ static int folder_parent(Mfs *m, const Res *r) {
 static uint32_t folder_dir(int id) { return id == 0 ? ROOT_ID : FOLDER_BASE + (uint16_t)id; }
 static int dir_folder(uint32_t dir) { return dir == ROOT_ID ? 0 : (int16_t)(uint16_t)(dir - FOLDER_BASE); }
 
+/* The folder's name: the Pascal string that ends the record, after a fixed
+ * part of 94 or 98 bytes; if neither fits, the resource's name. */
 static void folder_name(const Res *r, MacName *n) {
-    unsigned l = r->data[FOBJ_FIXED];
+    unsigned f = fobj_name_at(r);
+    if (f) {
+        n->len = r->data[f];
+        memcpy(n->s, r->data + f + 1, n->len);
+        return;
+    }
+    if (r->has_name) {
+        *n = r->name;
+        return;
+    }
+    unsigned l = r->data[FOBJ_FIXED];           /* damaged: what is there */
     if (FOBJ_FIXED + 1 + l > r->len) l = r->len - FOBJ_FIXED - 1;
     n->len = (unsigned char)l;
     memcpy(n->s, r->data + FOBJ_FIXED + 1, l);
@@ -502,7 +543,9 @@ static void desk_write(Volume *v) {
     Mfs *m = M(v);
     for (int i = 0; i < m->desk.n; i++) {
         Res *r = &m->desk.v[i];
-        if (!memcmp(r->type, "FOBJ", 4) && r->len > FOBJ_FIXED && (r->id == 0 || folder_res(m, r->id) == r))
+        /* not in the records of the first Finders: they keep their own list of items */
+        if (!memcmp(r->type, "FOBJ", 4) && r->len > FOBJ_FIXED && !fobj_is_first(r) &&
+            (r->id == 0 || folder_res(m, r->id) == r))
             put16(r->data + 60, folder_items(m, r->id, 0));
     }
     uint32_t len;
